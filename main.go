@@ -2,17 +2,24 @@ package main
 
 import (
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 
+	"embed"
+
 	"github.com/fatih/color"
+	"github.com/santhosh-tekuri/jsonschema/v5"
 	"gopkg.in/yaml.v3"
 )
 
 const FLOW_DEFINITION_FILE = "sdflow.yaml"
+
+//go:embed schemas/sdflow.yaml.schema.json
+var sdFlowSchema embed.FS
 
 var data = `
 a: Easy!
@@ -61,41 +68,6 @@ func sample1() {
 	fmt.Printf("--- m dump:\n%s\n\n", string(d))
 }
 
-func sample2() {
-	yamlData := `
-key1: value1
-key2:
-  subkey1: subvalue1
-  subkey2: subvalue2
-key3:
-  - arrvalue1
-  - arrvalue2
-`
-
-	// Unmarshal YAML to a map[string]interface{}
-	var data map[string]interface{}
-	err := yaml.Unmarshal([]byte(yamlData), &data)
-	if err != nil {
-		panic(err)
-	}
-
-	// Iterate through the map and dispatch logic based on the value type
-	for key, value := range data {
-		fmt.Printf("Key: %s, Value: ", key)
-		switch v := value.(type) {
-		case string:
-			fmt.Println("String", v)
-		case []interface{}:
-			fmt.Println("Array", v)
-		case map[interface{}]interface{}:
-			// YAML unmarshalling often results in map[interface{}]interface{} for nested maps
-			fmt.Println("Object", v)
-		default:
-			fmt.Println("Unknown type", v)
-		}
-	}
-}
-
 // Define structs to match the YAML structure
 type CloudMakeConfig struct {
 	Env      map[string]string  `yaml:"env"`
@@ -140,14 +112,27 @@ type RunnableTask struct {
 	targetName       string
 }
 
+func validateFlowDefinitionFile(flowDefinitionFile string) {
+	var flowDefinitionObject map[string]interface{}
+	flowDefinitionSource, err := os.ReadFile(FLOW_DEFINITION_FILE)
+	bailOnError(err)
+	if err := yaml.Unmarshal([]byte(flowDefinitionSource), &flowDefinitionObject); err != nil {
+		log.Fatalf("FAILED TO READ YAML\nerror: %v", err)
+	}
+	validatorSchemaSource, err := fs.ReadFile(sdFlowSchema, "schemas/sdflow.yaml.schema.json")
+	bailOnError(err)
+	validator := jsonschema.MustCompileString("schemas/sdflow.yaml.schema.json", string(validatorSchemaSource))
+	if err := validator.Validate(flowDefinitionObject); err != nil {
+		log.Fatalf("SDFLOW FAILED TO VALIDATE\nerror: %v", err)
+	}
+}
+
 func printVitalsForTask(task *RunnableTask) {
-	fmt.Println(task, "<<<<<<<<")
-	fmt.Fprintf(os.Stderr, "TASK %s outputs to: ", color.MagentaString(task.targetName))
-	fmt.Println("")
-	return
 	if task.taskDeclaration == nil {
 		return
 	}
+
+	fmt.Fprint(os.Stderr, color.CyanString("Task: %s --> ", task.targetName))
 
 	if task.taskDeclaration.Out == nil {
 		fmt.Fprint(
@@ -240,53 +225,21 @@ func getPathRelativeToCwd(path string) string {
 
 func sample4() {
 
-	// Example YAML content
-	yamlContent := `
-env:
-  BASE_PATH: s3://mybucket/myproject
-
-myproject:
-  out: ${BASE_PATH}/myoutput.jsonl
-  in: ${BASE_PATH}/myinputs/project1/myinput.jsonl
-  pre: setup-environment.sh
-  run: jdxd --input ${input} --output ${output}
-  post: cleanup.sh
-  config:
-    s3:
-      retry: 3
-    notify:
-      failure:
-        slack:
-          message: "Job Failed: ${output}"
-          channel: mychannel
-`
-	var config CloudMakeConfig
-
-	// Unmarshal the YAML into our struct
-	if err := yaml.Unmarshal([]byte(yamlContent), &config); err != nil {
+	var flowDefinitionObject map[string]interface{}
+	flowDefinitionSource, err := os.ReadFile(FLOW_DEFINITION_FILE)
+	bailOnError(err)
+	if err := yaml.Unmarshal([]byte(flowDefinitionSource), &flowDefinitionObject); err != nil {
 		log.Fatalf("error: %v", err)
 	}
-
-	fmt.Printf("Parsed Config: %+v\n", config)
-
-	var flowSourceObject map[string]interface{}
-	testConf2, err := os.ReadFile(FLOW_DEFINITION_FILE)
-	if err != nil {
-		log.Fatalf("error: %v", err)
-	}
-	if err := yaml.Unmarshal([]byte(testConf2), &flowSourceObject); err != nil {
-		log.Fatalf("error: %v", err)
-	}
-	fmt.Printf("\n===========\nParsed SDFILE: %+v\n", config)
 
 	executionEnv := make(map[string]string)
 
 	// first pass: compile the execution environment
-	for targetIdentifier, value := range flowSourceObject {
+	for targetIdentifier, value := range flowDefinitionObject {
 
 		switch value.(type) {
 		case string: // variable definitions
-			executionEnv[targetIdentifier] = flowSourceObject[targetIdentifier].(string)
+			executionEnv[targetIdentifier] = flowDefinitionObject[targetIdentifier].(string)
 		}
 	}
 
@@ -294,7 +247,7 @@ myproject:
 	taskDependencies := make(map[string][]string)
 
 	// second pass: retrieve tasks and substitute using executionEnv
-	for targetIdentifier, value := range flowSourceObject {
+	for targetIdentifier, value := range flowDefinitionObject {
 
 		if executionEnv[targetIdentifier] != "" {
 			// skip variable definitions
@@ -374,7 +327,6 @@ myproject:
 	}
 
 	for targetIdentifier := range taskDependencies {
-		fmt.Println("TASK:", targetIdentifier)
 		task := taskLookup[targetIdentifier]
 		printVitalsForTask(task)
 	}
@@ -386,15 +338,15 @@ myproject:
 		return
 	} else {
 		task := taskLookup[lastArg]
-		fmt.Println("TASK", task.targetName)
 		runTask(task, executionEnv)
 	}
 }
 
 func main() {
+	validateFlowDefinitionFile(FLOW_DEFINITION_FILE)
+
 	// sample1()
-	sample2()
-	sample3()
+	// sample3()
 	sample4()
 
 }

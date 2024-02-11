@@ -1,3 +1,4 @@
+# global variables are any simple key-value pairs
 SCHEMAS_DIR: schemas
 GENERATORS_DIR: generators
 
@@ -20,6 +21,7 @@ self-validate:
   in: ${GENERATORS_DIR}/runnable.schema.jsonnet
   run: jsonnet $in | jq -S | tee $out
 
+# multiple inputs
 schemas:
 - ./${SCHEMAS_DIR}/sdflow.yaml.schema.json
 - ./${SCHEMAS_DIR}/runnable.schema.json
