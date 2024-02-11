@@ -20,5 +20,8 @@ pkgs.mkShell {
   packages = [
     goEnv
     gomod2nix
+    pkgs.check-jsonschema
+    pkgs.jsonnet
+    pkgs.jq
   ];
 }

@@ -1,0 +1,31 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "in": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "notify": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "out": {
+      "type": "string"
+    },
+    "post": {
+      "type": "string"
+    },
+    "pre": {
+      "type": "string"
+    },
+    "run": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "run"
+  ],
+  "type": "object"
+}

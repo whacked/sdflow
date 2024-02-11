@@ -1,0 +1,34 @@
+SCHEMAS_DIR: schemas
+GENERATORS_DIR: generators
+
+# if "out" is not specified
+# the entry key does not "look like" a file,
+# output goes to stdout
+self-validate:
+  in: ${SCHEMAS_DIR}/sdflow.yaml.schema.json
+  run: check-jsonschema --schemafile $in sdflow.yaml
+
+# if "out" is not specified,
+# AND the entry key begins with a file identifier
+# (ONLY ./, / are recognized),
+# the entry key is taken as the output file path
+./${SCHEMAS_DIR}/sdflow.yaml.schema.json:
+  in: ${GENERATORS_DIR}/sdflow.yaml.schema.jsonnet
+  run: jsonnet $in | jq -S | tee $out
+
+./${SCHEMAS_DIR}/runnable.schema.json:
+  in: ${GENERATORS_DIR}/runnable.schema.jsonnet
+  run: jsonnet $in | jq -S | tee $out
+
+schemas:
+- ./${SCHEMAS_DIR}/sdflow.yaml.schema.json
+- ./${SCHEMAS_DIR}/runnable.schema.json
+
+./runnable.go:
+  in: ${SCHEMAS_DIR}/runnable.schema.json
+  run: ./go-jsonschema -p main $in | tee $out
+
+main-program:
+  in: main.go
+  out: sdflow
+  run: go build main.go
