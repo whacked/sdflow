@@ -1,6 +1,9 @@
 package main
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
@@ -9,6 +12,8 @@ import (
 	"os"
 	"regexp"
 	"strings"
+
+	yaml "gopkg.in/yaml.v3"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
@@ -210,4 +215,83 @@ func getRemoteResourceBytes(remoteResourceLocation string) []byte {
 		return downloadRemoteFileFromS3(remoteResourceLocation)
 	}
 	return nil
+}
+
+func getBytesSha256(bytes []byte) string {
+	bytesSha256 := sha256.Sum256(bytes)
+	return hex.EncodeToString(bytesSha256[:])
+}
+
+func isBytesMatchingSha256(bytes []byte, precomputedSha256 string) bool {
+	return getBytesSha256(bytes) == precomputedSha256
+}
+
+func isFileBytesMatchingSha256(filePath string, precomputedSha256 string) bool {
+	fileBytes, err := os.ReadFile(filePath)
+	bailOnError(err)
+	return isBytesMatchingSha256(fileBytes, precomputedSha256)
+}
+
+func updateOutSha256ForTarget(flowDefinitionFile string, targetKey string, newSha256 string) string {
+	flowDefinitionFileSource, err := os.ReadFile(flowDefinitionFile)
+	bailOnError(err)
+	originalIndentationLevel := detectFirstIndentationLevel(string(flowDefinitionFileSource))
+
+	var node yaml.Node
+	err = yaml.Unmarshal(flowDefinitionFileSource, &node)
+	bailOnError(err)
+
+	updateSHA256InEntry(&node, targetKey, "out.sha256", newSha256)
+
+	outputBuffer := &bytes.Buffer{}
+	yamlEncoder := yaml.NewEncoder(outputBuffer)
+	yamlEncoder.SetIndent(originalIndentationLevel)
+
+	if err := yamlEncoder.Encode(node.Content[0]); err != nil {
+		log.Fatalf("Marshalling failed %s", err)
+	}
+	yamlEncoder.Close()
+	return string(outputBuffer.String())
+}
+
+func updateSHA256InEntry(node *yaml.Node, targetKey, propName string, newValue string) {
+	for _, n := range node.Content {
+		if n.Kind == yaml.MappingNode {
+			for i := 0; i < len(n.Content); i += 2 {
+				keyNode := n.Content[i]
+				if keyNode.Value == targetKey {
+					// Found the entry, now find or add the `out.sha256` within this entry
+					valNode := n.Content[i+1]
+					if valNode.Kind == yaml.MappingNode {
+						updateOrAddKey(valNode, propName, newValue)
+					}
+					return
+				}
+			}
+		}
+	}
+}
+
+func updateOrAddKey(node *yaml.Node, key, newValue string) {
+	found := false
+	for i := 0; i < len(node.Content); i += 2 {
+		keyNode := node.Content[i]
+		if keyNode.Value == key {
+			// Update the existing value
+			node.Content[i+1].Value = newValue
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		// Key not found, add it
+		node.Content = append(node.Content, &yaml.Node{
+			Kind:  yaml.ScalarNode,
+			Value: key,
+		}, &yaml.Node{
+			Kind:  yaml.ScalarNode,
+			Value: newValue,
+		})
+	}
 }

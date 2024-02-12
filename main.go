@@ -2,8 +2,6 @@ package main
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"log"
@@ -28,14 +26,15 @@ const CACHE_DIRECTORY = ".sdflow.cache"
 var sdFlowSchema embed.FS
 
 type RunnableTaskInput struct {
-	path   string
-	sha256 string
-	mtime  int64
+	path string
+	// sha256 string
+	mtime int64
 }
 
 type RunnableTask struct {
 	taskDeclaration  *RunnableSchemaJson
 	taskDependencies []*RunnableTask
+	targetKey        string // the original key
 	targetName       string
 	outTime          int64
 	inputs           []*RunnableTaskInput
@@ -187,24 +186,12 @@ func saveTaskInputToCache(task *RunnableTask) string {
 	return cachePath
 }
 
-func isBytesMatchingSha256(bytes []byte, precomputedSha256 string) bool {
-	bytesSha256 := sha256.Sum256(bytes)
-	hexValue := hex.EncodeToString(bytesSha256[:])
-	return hexValue == precomputedSha256
-}
-
-func isFileBytesMatchingSha256(filePath string, precomputedSha256 string) bool {
-	fileBytes, err := os.ReadFile(filePath)
-	bailOnError(err)
-	return isBytesMatchingSha256(fileBytes, precomputedSha256)
-}
-
-func runTask(task *RunnableTask, env map[string]string) {
+func runTask(task *RunnableTask, env map[string]string, shouldUpdateOutSha256 bool) {
 	fmt.Printf("Running task: %+v (%d dependencies)\n", task.targetName, len(task.taskDependencies))
 
 	for _, dep := range task.taskDependencies {
 		fmt.Println("Running dependency:", dep.targetName)
-		runTask(dep, env)
+		runTask(dep, env, shouldUpdateOutSha256)
 	}
 
 	if task.taskDeclaration == nil {
@@ -216,7 +203,6 @@ func runTask(task *RunnableTask, env map[string]string) {
 		fmt.Println("Checking sha256 of input file")
 
 		if isRemotePath(task.inputs[0].path) {
-
 			if isTaskInputInCache(task) {
 				cachedInputPath := getTaskInputCachePath(task)
 				fmt.Println("Using cached input", cachedInputPath)
@@ -258,7 +244,13 @@ func runTask(task *RunnableTask, env map[string]string) {
 		return
 	}
 
-	if task.taskDeclaration.OutSha256 != nil {
+	if shouldUpdateOutSha256 {
+		outputFileBytes, err := os.ReadFile(*task.taskDeclaration.Out)
+		bailOnError(err)
+		outputSha256 := getBytesSha256(outputFileBytes)
+		task.taskDeclaration.OutSha256 = &outputSha256
+		fmt.Println("Updated OUT SHA256:", outputSha256)
+	} else if task.taskDeclaration.OutSha256 != nil {
 		if isFileBytesMatchingSha256(*task.taskDeclaration.Out, *task.taskDeclaration.OutSha256) {
 			fmt.Println("OUT SHA256 matches!")
 		} else {
@@ -300,7 +292,7 @@ func populateTaskModTimes(task *RunnableTask) {
 	}
 }
 
-func runFlowDefinitionProcessor(flowDefinitionFilePath string) {
+func runFlowDefinitionProcessor(flowDefinitionFilePath string, shouldWriteOutSha256 bool) {
 
 	var flowDefinitionObject map[string]interface{}
 	flowDefinitionSource, err := os.ReadFile(flowDefinitionFilePath)
@@ -348,6 +340,7 @@ func runFlowDefinitionProcessor(flowDefinitionFilePath string) {
 					*substituteWithContext(subTarget.(string), executionEnv))
 			}
 			task := RunnableTask{
+				targetKey:  targetIdentifier,
 				targetName: substitutedTargetName,
 			}
 			taskLookup[substitutedTargetName] = &task
@@ -356,6 +349,7 @@ func runFlowDefinitionProcessor(flowDefinitionFilePath string) {
 			runnableData := ruleContent.(map[string]interface{})
 
 			task := RunnableTask{
+				targetKey:       targetIdentifier,
 				taskDeclaration: &RunnableSchemaJson{},
 			}
 
@@ -432,12 +426,12 @@ func runFlowDefinitionProcessor(flowDefinitionFilePath string) {
 		}
 	}
 
-	for targetIdentifier := range taskDependencies {
-		task := taskLookup[targetIdentifier]
-		printVitalsForTask(task)
-	}
-
-	if len(os.Args) > 1 {
+	if len(os.Args) == 1 {
+		for targetIdentifier := range taskDependencies {
+			task := taskLookup[targetIdentifier]
+			printVitalsForTask(task)
+		}
+	} else if len(os.Args) > 1 {
 		lastArg := os.Args[len(os.Args)-1]
 		// see if lastarg is in our lookup
 		if _, ok := taskLookup[lastArg]; !ok {
@@ -445,20 +439,32 @@ func runFlowDefinitionProcessor(flowDefinitionFilePath string) {
 			return
 		} else {
 			task := taskLookup[lastArg]
-			runTask(task, executionEnv)
+			runTask(task, executionEnv, shouldWriteOutSha256)
+
+			if shouldWriteOutSha256 {
+				updatedYamlString := updateOutSha256ForTarget(FLOW_DEFINITION_FILE, task.targetKey, *task.taskDeclaration.OutSha256)
+				outputYamlString := addInterveningSpacesToRootLevelBlocks(updatedYamlString)
+				// re-output the file
+				currentFileMode := os.ModePerm
+				if fileInfo, err := os.Stat(FLOW_DEFINITION_FILE); err == nil {
+					currentFileMode = fileInfo.Mode()
+				}
+				err := os.WriteFile(FLOW_DEFINITION_FILE, []byte(outputYamlString), currentFileMode)
+				if err != nil {
+					log.Printf("original file: %s", flowDefinitionSource)
+					log.Fatalf("error: %v", err)
+				}
+			}
 		}
 	}
 }
 
 func reformatFlowDefinitionFile(flowDefinitionFile string) string {
-
-	var node yaml.Node
-
 	flowDefinitionFileSource, err := os.ReadFile(flowDefinitionFile)
 	bailOnError(err)
-
 	originalIndentationLevel := detectFirstIndentationLevel(string(flowDefinitionFileSource))
 
+	var node yaml.Node
 	if err := yaml.Unmarshal(flowDefinitionFileSource, &node); err != nil {
 		log.Fatalf("Unmarshalling failed %s", err)
 	}
@@ -510,17 +516,20 @@ func main() {
 				}
 			}
 
+			shouldUpdateOutSha256, _ := cmd.Flags().GetBool("updatehash")
+
 			// if len(args) == 0 {
 			// 	return fmt.Errorf("need at least a transformer to do anything")
 			// }
 
-			runFlowDefinitionProcessor(FLOW_DEFINITION_FILE)
+			runFlowDefinitionProcessor(FLOW_DEFINITION_FILE, shouldUpdateOutSha256)
 			return nil
 		},
 	}
 
 	rootCmd.Flags().Bool("validate", false, "asdf")
 	rootCmd.Flags().String("completions", "", "asdf")
+	rootCmd.Flags().Bool("updatehash", false, "asdf")
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)

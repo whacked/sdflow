@@ -16,7 +16,7 @@ self-validate:
 ./${SCHEMAS_DIR}/sdflow.yaml.schema.json:
   in: ${GENERATORS_DIR}/sdflow.yaml.schema.jsonnet
   run: jsonnet $in | jq -S | tee $out
-  out.sha256: a4e842b8fdd9db08748953453272a2d7ce392593ab017f4d2910a454659e4040
+  out.sha256: 1c8a656566dacfaaaece7b5e3e52a59faca12d3803443a1a56fdd5a9a7b8e347
 
 ./${SCHEMAS_DIR}/runnable.schema.json:
   in: ${GENERATORS_DIR}/runnable.schema.jsonnet
@@ -24,18 +24,18 @@ self-validate:
 
 # multiple inputs
 schemas:
-- ./${SCHEMAS_DIR}/sdflow.yaml.schema.json
-- ./${SCHEMAS_DIR}/runnable.schema.json
+  - ./${SCHEMAS_DIR}/sdflow.yaml.schema.json
+  - ./${SCHEMAS_DIR}/runnable.schema.json
 
 ./runnable.go:
   in: ${SCHEMAS_DIR}/runnable.schema.json
   run: go-jsonschema -p main $in | tee $out
 
 main-program:
-  in:  # currently sha256 is only supported for single input
-  - main.go
-  - ./runnable.go
-  - util.go
+  in: # currently sha256 is only supported for single input
+    - main.go
+    - ./runnable.go
+    - util.go
   out: sdflow
   run: go build -o $out $in
 
