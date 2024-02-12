@@ -24,6 +24,21 @@ func bailOnError(err error) {
 }
 
 func topSortDependencies(taskDependencies map[string][]string, targetTask string) []string {
+	/*
+		taskDependencies := map[string][]string{
+			"task1": {},
+			"task2": {"task1"},
+			"task3": {"task2"},
+		}
+
+		topSortedDependencies := topSortDependencies(taskDependencies, "task3")
+		for _, task := range topSortedDependencies {
+			fmt.Println(task)
+		}
+		> task1
+		> task2
+		> task3
+	*/
 	graph := topsort.NewGraph()
 
 	for task, deps := range taskDependencies {
@@ -195,17 +210,4 @@ func getRemoteResourceBytes(remoteResourceLocation string) []byte {
 		return downloadRemoteFileFromS3(remoteResourceLocation)
 	}
 	return nil
-}
-
-func sample3() {
-	taskDependencies := map[string][]string{
-		"task1": {},
-		"task2": {"task1"},
-		"task3": {"task2"},
-	}
-
-	topSortedDependencies := topSortDependencies(taskDependencies, "task3")
-	for _, task := range topSortedDependencies {
-		fmt.Println(task)
-	}
 }

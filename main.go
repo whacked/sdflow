@@ -156,6 +156,12 @@ func isBytesMatchingSha256(bytes []byte, precomputedSha256 string) bool {
 	return hexValue == precomputedSha256
 }
 
+func isFileBytesMatchingSha256(filePath string, precomputedSha256 string) bool {
+	fileBytes, err := os.ReadFile(filePath)
+	bailOnError(err)
+	return isBytesMatchingSha256(fileBytes, precomputedSha256)
+}
+
 func runTask(task *RunnableTask, env map[string]string) {
 	fmt.Printf("Running task: %+v (%d dependencies)\n", task.targetName, len(task.taskDependencies))
 
@@ -182,6 +188,12 @@ func runTask(task *RunnableTask, env map[string]string) {
 				cachedInputPath := saveTaskInputToCache(task)
 				fmt.Println("saved input to cache", cachedInputPath)
 				return
+			}
+		} else {
+			if isFileBytesMatchingSha256(*task.taskDeclaration.In, *task.taskDeclaration.InSha256) {
+				fmt.Println("IN SHA256 matches!")
+			} else {
+				fmt.Println("IN SHA256 mismatch!")
 			}
 		}
 	}
@@ -210,10 +222,7 @@ func runTask(task *RunnableTask, env map[string]string) {
 	}
 
 	if task.taskDeclaration.OutSha256 != nil {
-		outFileBytes, err := os.ReadFile(*task.taskDeclaration.Out)
-		bailOnError(err)
-
-		if isBytesMatchingSha256(outFileBytes, *task.taskDeclaration.OutSha256) {
+		if isFileBytesMatchingSha256(*task.taskDeclaration.Out, *task.taskDeclaration.OutSha256) {
 			fmt.Println("OUT SHA256 matches!")
 		} else {
 			fmt.Println("OUT SHA256 mismatch!")
@@ -252,10 +261,10 @@ func populateTaskModTimes(task *RunnableTask) {
 	}
 }
 
-func sample4() {
+func runFlowDefinitionProcessor(flowDefinitionFilePath string) {
 
 	var flowDefinitionObject map[string]interface{}
-	flowDefinitionSource, err := os.ReadFile(FLOW_DEFINITION_FILE)
+	flowDefinitionSource, err := os.ReadFile(flowDefinitionFilePath)
 	bailOnError(err)
 	if err := yaml.Unmarshal([]byte(flowDefinitionSource), &flowDefinitionObject); err != nil {
 		log.Fatalf("error: %v", err)
@@ -411,8 +420,6 @@ func reformatFlowDefinitionFile(flowDefinitionFile string) string {
 }
 
 func main() {
-	// sample3()
-	sample4()
 
 	COLORIZED_PROGRAM_NAME := color.HiBlueString(os.Args[0])
 
@@ -456,6 +463,7 @@ func main() {
 			// 	return fmt.Errorf("need at least a transformer to do anything")
 			// }
 
+			runFlowDefinitionProcessor(FLOW_DEFINITION_FILE)
 			return nil
 		},
 	}
