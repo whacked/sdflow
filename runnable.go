@@ -21,6 +21,9 @@ type RunnableSchemaJson struct {
 	// Out corresponds to the JSON schema field "out".
 	Out *string `json:"out,omitempty" yaml:"out,omitempty" mapstructure:"out,omitempty"`
 
+	// OutSha256 corresponds to the JSON schema field "out.sha256".
+	OutSha256 *string `json:"out.sha256,omitempty" yaml:"out.sha256,omitempty" mapstructure:"out.sha256,omitempty"`
+
 	// Post corresponds to the JSON schema field "post".
 	Post *string `json:"post,omitempty" yaml:"post,omitempty" mapstructure:"post,omitempty"`
 

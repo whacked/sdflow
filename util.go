@@ -2,10 +2,18 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"log"
+	"net/http"
+	"net/url"
+	"os"
 	"regexp"
 	"strings"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 	"github.com/stevenle/topsort"
 )
 
@@ -31,6 +39,10 @@ func topSortDependencies(taskDependencies map[string][]string, targetTask string
 
 func isPath(s string) bool {
 	return strings.HasPrefix(s, "./") || strings.HasPrefix(s, "/")
+}
+
+func isRemotePath(s string) bool {
+	return strings.HasPrefix(s, "http") || strings.HasPrefix(s, "s3://")
 }
 
 // yaml handling
@@ -84,6 +96,105 @@ func addInterveningSpacesToRootLevelBlocks(yamlSource string) string {
 	}
 
 	return strings.TrimSpace(strings.Join(processedLines, "\n"))
+}
+
+func downloadRemoteFileFromHttp(url string) []byte {
+	resp, err := http.Get(url)
+	if err != nil {
+		fmt.Fprintf(
+			os.Stderr,
+			"failed to make a GET request: %v",
+			err,
+		)
+		return nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(
+			os.Stderr,
+			"received non-200 response status: %d %s",
+			resp.StatusCode,
+			resp.Status,
+		)
+		return nil
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		fmt.Fprintf(
+			os.Stderr,
+			"failed to read response body: %v",
+			err,
+		)
+	}
+
+	return body
+}
+
+func downloadRemoteFileFromS3(s3Uri string) []byte {
+	u, err := url.Parse(s3Uri)
+	if err != nil {
+		fmt.Fprintf(
+			os.Stderr,
+			"failed to parse S3 URI: %v",
+			err,
+		)
+		return nil
+	}
+
+	if u.Scheme != "s3" {
+		fmt.Fprintf(
+			os.Stderr,
+			"invalid URI scheme: %s",
+			u.Scheme,
+		)
+		return nil
+	}
+
+	bucketName := u.Host
+	pathInBucket := u.Path[1:] // Remove the leading slash
+
+	awsRegion := os.Getenv("AWS_REGION")
+	if awsRegion == "" {
+		awsRegion = os.Getenv("AWS_DEFAULT_REGION")
+		if awsRegion == "" {
+			awsRegion = "us-east-1"
+		}
+	}
+
+	awsSession := session.Must(session.NewSession(
+		&aws.Config{
+			Region: aws.String(awsRegion),
+		},
+	))
+
+	downloader := s3manager.NewDownloader(awsSession)
+	buf := aws.NewWriteAtBuffer([]byte{})
+	_, err = downloader.Download(buf, &s3.GetObjectInput{
+		Bucket: aws.String(bucketName),
+		Key:    aws.String(pathInBucket),
+	})
+
+	if err != nil {
+		fmt.Fprintf(
+			os.Stderr,
+			"failed to download file from S3: %v",
+			err,
+		)
+		return nil
+	}
+
+	return buf.Bytes()
+}
+
+func getRemoteResourceBytes(remoteResourceLocation string) []byte {
+	if strings.HasPrefix(remoteResourceLocation, "http") {
+		return downloadRemoteFileFromHttp(remoteResourceLocation)
+	} else if strings.HasPrefix(remoteResourceLocation, "s3://") {
+		return downloadRemoteFileFromS3(remoteResourceLocation)
+	}
+	return nil
 }
 
 func sample3() {

@@ -6,6 +6,7 @@
     'in': { type: 'string' },
     'in.sha256': { type: 'string' },
     out: { type: 'string' },
+    'out.sha256': { type: 'string' },
     pre: { type: 'string' },
     post: { type: 'string' },
     run: { type: 'string' },

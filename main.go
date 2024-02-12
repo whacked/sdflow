@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"log"
@@ -20,64 +22,10 @@ import (
 )
 
 const FLOW_DEFINITION_FILE = "sdflow.yaml"
+const CACHE_DIRECTORY = ".sdflow.cache"
 
 //go:embed schemas/sdflow.yaml.schema.json
 var sdFlowSchema embed.FS
-
-var data = `
-a: Easy!
-b:
-  c: 2
-  d: [3, 4]
-`
-
-// Note: struct fields must be public in order for unmarshal to
-// correctly populate the data.
-type T struct {
-	A string
-	B struct {
-		RenamedC int   `yaml:"c"`
-		D        []int `yaml:",flow"`
-	}
-}
-
-// Define structs to match the YAML structure
-type CloudMakeConfig struct {
-	Env      map[string]string  `yaml:"env"`
-	Projects map[string]Project `yaml:",inline"`
-}
-
-type Project struct {
-	Out  string `yaml:"out"`
-	In   string `yaml:"in"`
-	Pre  string `yaml:"pre"`
-	Run  string `yaml:"run"`
-	Post string `yaml:"post"`
-	// Config ProjectConfig `yaml:"config"`
-	Config interface{} `yaml:"config"`
-}
-
-// type ProjectConfig struct {
-// 	S3     S3Config     `yaml:"s3"`
-// 	Notify NotifyConfig `yaml:"notify"`
-// }
-
-// type S3Config struct {
-// 	Retry int `yaml:"retry"`
-// }
-
-// type NotifyConfig struct {
-// 	Failure FailureNotify `yaml:"failure"`
-// }
-
-// type FailureNotify struct {
-// 	Slack SlackConfig `yaml:"slack"`
-// }
-
-// type SlackConfig struct {
-// 	Message string `yaml:"message"`
-// 	Channel string `yaml:"channel"`
-// }
 
 type RunnableTask struct {
 	taskDeclaration  *RunnableSchemaJson
@@ -167,6 +115,47 @@ func renderCommand(runnable *RunnableSchemaJson) string {
 	return renderedCommand
 }
 
+func getTaskInputCachePath(task *RunnableTask) string {
+	if task.taskDeclaration.InSha256 != nil {
+		return filepath.Join(CACHE_DIRECTORY, *task.taskDeclaration.InSha256)
+	}
+	return ""
+}
+
+func isTaskInputInCache(task *RunnableTask) bool {
+	if task.taskDeclaration.InSha256 != nil {
+		cachePath := getTaskInputCachePath(task)
+		if _, err := os.Stat(cachePath); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func saveTaskInputToCache(task *RunnableTask) string {
+	if _, err := os.Stat(CACHE_DIRECTORY); os.IsNotExist(err) {
+		os.Mkdir(CACHE_DIRECTORY, 0755)
+	}
+
+	remoteBytes := getRemoteResourceBytes(*task.taskDeclaration.In)
+	fmt.Println("Downloaded content length:", len(remoteBytes))
+	if isBytesMatchingSha256(remoteBytes, *task.taskDeclaration.InSha256) {
+		fmt.Println("SHA256 matches!")
+	} else {
+		fmt.Println("SHA256 mismatch!")
+	}
+	cachePath := getTaskInputCachePath(task)
+	err := os.WriteFile(cachePath, remoteBytes, 0644)
+	bailOnError(err)
+	return cachePath
+}
+
+func isBytesMatchingSha256(bytes []byte, precomputedSha256 string) bool {
+	bytesSha256 := sha256.Sum256(bytes)
+	hexValue := hex.EncodeToString(bytesSha256[:])
+	return hexValue == precomputedSha256
+}
+
 func runTask(task *RunnableTask, env map[string]string) {
 	fmt.Printf("Running task: %+v (%d dependencies)\n", task.targetName, len(task.taskDependencies))
 
@@ -178,6 +167,23 @@ func runTask(task *RunnableTask, env map[string]string) {
 	if task.taskDeclaration == nil {
 		fmt.Println(color.RedString("No task declaration found!!!"))
 		return
+	}
+
+	if task.taskDeclaration.InSha256 != nil && task.taskDeclaration.In != nil {
+		fmt.Println("Checking sha256 of input file")
+
+		if isRemotePath(*task.taskDeclaration.In) {
+
+			if isTaskInputInCache(task) {
+				cachedInputPath := getTaskInputCachePath(task)
+				fmt.Println("Using cached input", cachedInputPath)
+				return
+			} else {
+				cachedInputPath := saveTaskInputToCache(task)
+				fmt.Println("saved input to cache", cachedInputPath)
+				return
+			}
+		}
 	}
 
 	command := renderCommand(task.taskDeclaration)
@@ -201,6 +207,17 @@ func runTask(task *RunnableTask, env map[string]string) {
 	if err != nil {
 		fmt.Println("Error executing command:", err)
 		return
+	}
+
+	if task.taskDeclaration.OutSha256 != nil {
+		outFileBytes, err := os.ReadFile(*task.taskDeclaration.Out)
+		bailOnError(err)
+
+		if isBytesMatchingSha256(outFileBytes, *task.taskDeclaration.OutSha256) {
+			fmt.Println("OUT SHA256 matches!")
+		} else {
+			fmt.Println("OUT SHA256 mismatch!")
+		}
 	}
 }
 
@@ -312,6 +329,16 @@ func sample4() {
 				task.taskDeclaration.In = &inString
 			} else {
 				log.Fatalf("error: %v", "run is required")
+			}
+
+			if inSha256Value, ok := runnableData["in.sha256"]; ok {
+				inSha256String := inSha256Value.(string)
+				task.taskDeclaration.InSha256 = &inSha256String
+			}
+
+			if outSha256Value, ok := runnableData["out.sha256"]; ok {
+				outSha256String := outSha256Value.(string)
+				task.taskDeclaration.OutSha256 = &outSha256String
 			}
 
 			if runnableValue, ok := runnableData["run"]; ok {

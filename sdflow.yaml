@@ -16,6 +16,7 @@ self-validate:
 ./${SCHEMAS_DIR}/sdflow.yaml.schema.json:
   in: ${GENERATORS_DIR}/sdflow.yaml.schema.jsonnet
   run: jsonnet $in | jq -S | tee $out
+  out.sha256: a4e842b8fdd9db08748953453272a2d7ce392593ab017f4d2910a454659e4040
 
 ./${SCHEMAS_DIR}/runnable.schema.json:
   in: ${GENERATORS_DIR}/runnable.schema.jsonnet

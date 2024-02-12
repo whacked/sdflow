@@ -32,6 +32,9 @@
             "out": {
               "type": "string"
             },
+            "out.sha256": {
+              "type": "string"
+            },
             "post": {
               "type": "string"
             },
