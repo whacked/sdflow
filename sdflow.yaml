@@ -34,3 +34,13 @@ main-program:
   in: main.go
   out: sdflow
   run: go build main.go
+
+example-web-loader:
+  in: https://example.com
+  in.sha256: ea8fac7c65fb589b0d53560f5251f74f9e9b243478dcb6b3ea79b5e36449c8d9
+  run: curl -s $in | grep -i title
+
+example-s3-loader:
+  in: s3://answer-reformulation-pds/README.txt
+  in.sha256: b24b59e210cefd4d964413ac555e4573470909f8aa3d16b6b9a65ddb04490b69
+  run: date
