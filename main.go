@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"io/fs"
 	"log"
@@ -11,9 +12,11 @@ import (
 
 	"embed"
 
+	"github.com/spf13/cobra"
+
 	"github.com/fatih/color"
 	"github.com/santhosh-tekuri/jsonschema/v5"
-	"gopkg.in/yaml.v3"
+	yaml "gopkg.in/yaml.v3"
 )
 
 const FLOW_DEFINITION_FILE = "sdflow.yaml"
@@ -36,36 +39,6 @@ type T struct {
 		RenamedC int   `yaml:"c"`
 		D        []int `yaml:",flow"`
 	}
-}
-
-func sample1() {
-	t := T{}
-
-	err := yaml.Unmarshal([]byte(data), &t)
-	if err != nil {
-		log.Fatalf("error: %v", err)
-	}
-	fmt.Printf("--- t:\n%v\n\n", t)
-
-	d, err := yaml.Marshal(&t)
-	if err != nil {
-		log.Fatalf("error: %v", err)
-	}
-	fmt.Printf("--- t dump:\n%s\n\n", string(d))
-
-	m := make(map[interface{}]interface{})
-
-	err = yaml.Unmarshal([]byte(data), &m)
-	if err != nil {
-		log.Fatalf("error: %v", err)
-	}
-	fmt.Printf("--- m:\n%v\n\n", m)
-
-	d, err = yaml.Marshal(&m)
-	if err != nil {
-		log.Fatalf("error: %v", err)
-	}
-	fmt.Printf("--- m dump:\n%s\n\n", string(d))
 }
 
 // Define structs to match the YAML structure
@@ -110,6 +83,8 @@ type RunnableTask struct {
 	taskDeclaration  *RunnableSchemaJson
 	taskDependencies []*RunnableTask
 	targetName       string
+	inTime           int64
+	outTime          int64
 }
 
 func validateFlowDefinitionFile(flowDefinitionFile string) {
@@ -132,20 +107,36 @@ func printVitalsForTask(task *RunnableTask) {
 		return
 	}
 
-	fmt.Fprint(os.Stderr, color.CyanString("Task: %s --> ", task.targetName))
+	var upToDateString string
+	if task.outTime > task.inTime {
+		upToDateString = color.GreenString("current")
+	} else if task.taskDeclaration.Out == nil {
+		upToDateString = color.MagentaString("always ")
+	} else {
+		upToDateString = color.RedString("stale  ")
+	}
+
+	fmt.Fprintf(os.Stderr,
+		"%s [%s]\n  %s --> ",
+		upToDateString,
+		color.HiWhiteString("%s", task.targetName),
+		color.YellowString("%s", *task.taskDeclaration.In),
+	)
 
 	if task.taskDeclaration.Out == nil {
 		fmt.Fprint(
 			os.Stderr,
-			color.CyanString("%s\n", "<STDOUT>"),
+			color.CyanString("%s", "<STDOUT>"),
 		)
 	} else {
-		fmt.Fprint(
+		fmt.Fprintf(
 			os.Stderr,
-			color.YellowString("%s\n", *task.taskDeclaration.Out),
+			"%s",
+			color.BlueString("%s", *task.taskDeclaration.Out),
 		)
 	}
 
+	fmt.Fprintf(os.Stderr, "\n")
 }
 
 func substituteWithContext(s string, context map[string]string) *string {
@@ -214,6 +205,9 @@ func runTask(task *RunnableTask, env map[string]string) {
 }
 
 func getPathRelativeToCwd(path string) string {
+	if !isPath(path) {
+		return path
+	}
 	cwd, err := os.Getwd()
 	bailOnError(err)
 	absPath, err := filepath.Abs(path)
@@ -221,6 +215,24 @@ func getPathRelativeToCwd(path string) string {
 	relPath, err := filepath.Rel(cwd, absPath)
 	bailOnError(err)
 	return relPath
+}
+
+func populateTaskModTimes(task *RunnableTask) {
+	if task.taskDeclaration == nil {
+		return
+	}
+	if task.taskDeclaration.In != nil {
+		stat, err := os.Stat(*task.taskDeclaration.In)
+		if err == nil {
+			task.inTime = stat.ModTime().Unix()
+		}
+	}
+	if task.taskDeclaration.Out != nil {
+		stat, err := os.Stat(*task.taskDeclaration.Out)
+		if err == nil {
+			task.outTime = stat.ModTime().Unix()
+		}
+	}
 }
 
 func sample4() {
@@ -308,6 +320,7 @@ func sample4() {
 			} else {
 				log.Fatalf("error: %v", "run is required")
 			}
+			populateTaskModTimes(&task)
 
 			taskLookup[substitutedTargetName] = &task
 		}
@@ -331,26 +344,101 @@ func sample4() {
 		printVitalsForTask(task)
 	}
 
-	lastArg := os.Args[len(os.Args)-1]
-	// see if lastarg is in our lookup
-	if _, ok := taskLookup[lastArg]; !ok {
-		fmt.Printf("Task %s not found\n", lastArg)
-		return
-	} else {
-		task := taskLookup[lastArg]
-		runTask(task, executionEnv)
+	if len(os.Args) > 1 {
+		lastArg := os.Args[len(os.Args)-1]
+		// see if lastarg is in our lookup
+		if _, ok := taskLookup[lastArg]; !ok {
+			fmt.Printf("Task %s not found\n", lastArg)
+			return
+		} else {
+			task := taskLookup[lastArg]
+			runTask(task, executionEnv)
+		}
 	}
 }
 
-func main() {
-	validateFlowDefinitionFile(FLOW_DEFINITION_FILE)
+func reformatFlowDefinitionFile(flowDefinitionFile string) string {
 
-	// sample1()
+	var node yaml.Node
+
+	flowDefinitionFileSource, err := os.ReadFile(flowDefinitionFile)
+	bailOnError(err)
+
+	originalIndentationLevel := detectFirstIndentationLevel(string(flowDefinitionFileSource))
+
+	if err := yaml.Unmarshal(flowDefinitionFileSource, &node); err != nil {
+		log.Fatalf("Unmarshalling failed %s", err)
+	}
+
+	outputBuffer := &bytes.Buffer{}
+	yamlEncoder := yaml.NewEncoder(outputBuffer)
+	yamlEncoder.SetIndent(originalIndentationLevel)
+
+	if err := yamlEncoder.Encode(node.Content[0]); err != nil {
+		log.Fatalf("Marshalling failed %s", err)
+	}
+	yamlEncoder.Close()
+
+	updatedYaml := string(outputBuffer.String())
+	return addInterveningSpacesToRootLevelBlocks(updatedYaml)
+}
+
+func main() {
 	// sample3()
 	sample4()
 
-}
+	COLORIZED_PROGRAM_NAME := color.HiBlueString(os.Args[0])
 
-func isPath(s string) bool {
-	return strings.HasPrefix(s, "./") || strings.HasPrefix(s, "/")
+	var rootCmd = &cobra.Command{
+
+		Use: strings.Join(
+			[]string{
+				fmt.Sprintf("\n- <data source> | %s %s  # (read from STDIN)", COLORIZED_PROGRAM_NAME, color.CyanString("[transformer]")),
+				fmt.Sprintf("\n- %s %s", COLORIZED_PROGRAM_NAME, color.CyanString("[input-data] [transformer]")),
+				fmt.Sprintf("\n- %s %s", COLORIZED_PROGRAM_NAME, color.CyanString("[flags]")),
+				"\n",
+				"\n[input-data]  is the path to the input data file to be processed, or - to read from STDIN, or implied as STDIN",
+				"\n[transformer] is the path to the jsonata or jsonnet file to be used for transformation, or the code as a string",
+				"\n[flags]       specify arguments explicitly for more complex processing; see help",
+			},
+			"",
+		),
+		Short: "App transforms JSONL/XSV files based on transformation code.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+
+			validateDefintionFileFlag, _ := cmd.Flags().GetBool("reformat")
+			if validateDefintionFileFlag {
+				validateFlowDefinitionFile(FLOW_DEFINITION_FILE)
+			}
+
+			reformatDefinitionFileFlag, _ := cmd.Flags().GetBool("reformat")
+			if reformatDefinitionFileFlag {
+				reformattedFlowDefinition := reformatFlowDefinitionFile(FLOW_DEFINITION_FILE)
+				fmt.Println(reformattedFlowDefinition)
+			}
+
+			generateCompletionsFlag, _ := cmd.Flags().GetString("completions")
+			if generateCompletionsFlag != "" {
+				switch generateCompletionsFlag {
+				case "bash":
+				case "zsh":
+				}
+			}
+
+			// if len(args) == 0 {
+			// 	return fmt.Errorf("need at least a transformer to do anything")
+			// }
+
+			return nil
+		},
+	}
+
+	rootCmd.Flags().Bool("validate", false, "asdf")
+	rootCmd.Flags().Bool("reformat", false, "asdf")
+	rootCmd.Flags().String("completions", "", "asdf")
+
+	if err := rootCmd.Execute(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
 }

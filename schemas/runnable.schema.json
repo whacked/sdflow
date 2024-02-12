@@ -4,6 +4,9 @@
     "in": {
       "type": "string"
     },
+    "in.sha256": {
+      "type": "string"
+    },
     "name": {
       "type": "string"
     },

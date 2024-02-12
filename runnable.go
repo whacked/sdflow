@@ -9,6 +9,9 @@ type RunnableSchemaJson struct {
 	// In corresponds to the JSON schema field "in".
 	In *string `json:"in,omitempty" yaml:"in,omitempty" mapstructure:"in,omitempty"`
 
+	// InSha256 corresponds to the JSON schema field "in.sha256".
+	InSha256 *string `json:"in.sha256,omitempty" yaml:"in.sha256,omitempty" mapstructure:"in.sha256,omitempty"`
+
 	// Name corresponds to the JSON schema field "name".
 	Name *string `json:"name,omitempty" yaml:"name,omitempty" mapstructure:"name,omitempty"`
 

@@ -4,6 +4,7 @@
   properties: {
     name: { type: 'string' },
     'in': { type: 'string' },
+    'in.sha256': { type: 'string' },
     out: { type: 'string' },
     pre: { type: 'string' },
     post: { type: 'string' },
