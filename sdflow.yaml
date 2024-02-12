@@ -29,7 +29,7 @@ schemas:
 
 ./runnable.go:
   in: ${SCHEMAS_DIR}/runnable.schema.json
-  run: ./go-jsonschema -p main $in | tee $out
+  run: go-jsonschema -p main $in | tee $out
 
 main-program:
   in:  # currently sha256 is only supported for single input
