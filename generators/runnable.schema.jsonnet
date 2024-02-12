@@ -3,7 +3,18 @@
   type: 'object',
   properties: {
     name: { type: 'string' },
-    'in': { type: 'string' },
+    'in': {
+      oneOf: [
+        {
+          type: 'string',
+        },
+        {
+          // multiple inputs
+          type: 'array',
+          items: { type: 'string' },
+        },
+      ],
+    },
     'in.sha256': { type: 'string' },
     out: { type: 'string' },
     'out.sha256': { type: 'string' },

@@ -27,12 +27,18 @@ const CACHE_DIRECTORY = ".sdflow.cache"
 //go:embed schemas/sdflow.yaml.schema.json
 var sdFlowSchema embed.FS
 
+type RunnableTaskInput struct {
+	path   string
+	sha256 string
+	mtime  int64
+}
+
 type RunnableTask struct {
 	taskDeclaration  *RunnableSchemaJson
 	taskDependencies []*RunnableTask
 	targetName       string
-	inTime           int64
 	outTime          int64
+	inputs           []*RunnableTaskInput
 }
 
 func validateFlowDefinitionFile(flowDefinitionFile string) {
@@ -56,7 +62,19 @@ func printVitalsForTask(task *RunnableTask) {
 	}
 
 	var upToDateString string
-	if task.outTime > task.inTime {
+	isOutputMoreRecent := true
+	for _, taskInput := range task.inputs {
+		if _, err := os.Stat(taskInput.path); err == nil {
+			stat, err := os.Stat(taskInput.path)
+			if err == nil {
+				taskInput.mtime = stat.ModTime().Unix()
+				if task.outTime <= taskInput.mtime {
+					isOutputMoreRecent = false
+				}
+			}
+		}
+	}
+	if isOutputMoreRecent {
 		upToDateString = color.GreenString("current")
 	} else if task.taskDeclaration.Out == nil {
 		upToDateString = color.MagentaString("always ")
@@ -68,7 +86,14 @@ func printVitalsForTask(task *RunnableTask) {
 		"%s [%s]\n  %s --> ",
 		upToDateString,
 		color.HiWhiteString("%s", task.targetName),
-		color.YellowString("%s", *task.taskDeclaration.In),
+		color.YellowString("%s", strings.Join(
+			func() []string {
+				var out []string
+				for _, taskInput := range task.inputs {
+					out = append(out, taskInput.path)
+				}
+				return out
+			}(), "\n  ")),
 	)
 
 	if task.taskDeclaration.Out == nil {
@@ -96,34 +121,42 @@ func substituteWithContext(s string, context map[string]string) *string {
 	return &substituted
 }
 
-func renderCommand(runnable *RunnableSchemaJson) string {
+func renderCommand(task *RunnableTask) string {
 
 	vars := map[string]string{}
 
-	if runnable.In != nil {
-		vars["in"] = *runnable.In
+	if task.taskDeclaration.In != nil {
+		vars["in"] = strings.Join(
+			func() []string {
+				var out []string
+				for _, taskInput := range task.inputs {
+					out = append(out, taskInput.path)
+				}
+				return out
+			}(), " ",
+		)
 	}
-	if runnable.Out != nil {
-		vars["out"] = *runnable.Out
+	if task.taskDeclaration.Out != nil {
+		vars["out"] = *task.taskDeclaration.Out
 	}
 
 	mapper := func(varName string) string {
 		return vars[varName]
 	}
 
-	renderedCommand := os.Expand(runnable.Run, mapper)
+	renderedCommand := os.Expand(task.taskDeclaration.Run, mapper)
 	return renderedCommand
 }
 
 func getTaskInputCachePath(task *RunnableTask) string {
-	if task.taskDeclaration.InSha256 != nil {
+	if task.taskDeclaration.InSha256 != nil && len(task.inputs) == 1 {
 		return filepath.Join(CACHE_DIRECTORY, *task.taskDeclaration.InSha256)
 	}
 	return ""
 }
 
 func isTaskInputInCache(task *RunnableTask) bool {
-	if task.taskDeclaration.InSha256 != nil {
+	if task.taskDeclaration.InSha256 != nil && len(task.inputs) == 1 {
 		cachePath := getTaskInputCachePath(task)
 		if _, err := os.Stat(cachePath); err == nil {
 			return true
@@ -137,7 +170,11 @@ func saveTaskInputToCache(task *RunnableTask) string {
 		os.Mkdir(CACHE_DIRECTORY, 0755)
 	}
 
-	remoteBytes := getRemoteResourceBytes(*task.taskDeclaration.In)
+	if len(task.inputs) != 1 {
+		panic("saveTaskInputToCache: len(task.inputs) != 1")
+	}
+
+	remoteBytes := getRemoteResourceBytes(task.inputs[0].path)
 	fmt.Println("Downloaded content length:", len(remoteBytes))
 	if isBytesMatchingSha256(remoteBytes, *task.taskDeclaration.InSha256) {
 		fmt.Println("SHA256 matches!")
@@ -175,10 +212,10 @@ func runTask(task *RunnableTask, env map[string]string) {
 		return
 	}
 
-	if task.taskDeclaration.InSha256 != nil && task.taskDeclaration.In != nil {
+	if task.taskDeclaration.InSha256 != nil && task.taskDeclaration.In != nil && len(task.inputs) == 1 {
 		fmt.Println("Checking sha256 of input file")
 
-		if isRemotePath(*task.taskDeclaration.In) {
+		if isRemotePath(task.inputs[0].path) {
 
 			if isTaskInputInCache(task) {
 				cachedInputPath := getTaskInputCachePath(task)
@@ -190,7 +227,7 @@ func runTask(task *RunnableTask, env map[string]string) {
 				return
 			}
 		} else {
-			if isFileBytesMatchingSha256(*task.taskDeclaration.In, *task.taskDeclaration.InSha256) {
+			if isFileBytesMatchingSha256(task.inputs[0].path, *task.taskDeclaration.InSha256) {
 				fmt.Println("IN SHA256 matches!")
 			} else {
 				fmt.Println("IN SHA256 mismatch!")
@@ -198,7 +235,7 @@ func runTask(task *RunnableTask, env map[string]string) {
 		}
 	}
 
-	command := renderCommand(task.taskDeclaration)
+	command := renderCommand(task)
 	fmt.Fprint(
 		os.Stderr,
 		color.GreenString("Command: %s\n", command),
@@ -248,9 +285,11 @@ func populateTaskModTimes(task *RunnableTask) {
 		return
 	}
 	if task.taskDeclaration.In != nil {
-		stat, err := os.Stat(*task.taskDeclaration.In)
-		if err == nil {
-			task.inTime = stat.ModTime().Unix()
+		for _, taskInput := range task.inputs {
+			stat, err := os.Stat(taskInput.path)
+			if err == nil {
+				taskInput.mtime = stat.ModTime().Unix()
+			}
 		}
 	}
 	if task.taskDeclaration.Out != nil {
@@ -333,11 +372,29 @@ func runFlowDefinitionProcessor(flowDefinitionFilePath string) {
 			}
 
 			if inValue, ok := runnableData["in"]; ok {
-				inString := getPathRelativeToCwd(
-					*substituteWithContext(inValue.(string), executionEnv))
-				task.taskDeclaration.In = &inString
-			} else {
-				log.Fatalf("error: %v", "run is required")
+				task.inputs = make([]*RunnableTaskInput, 0)
+				if inArray, ok := inValue.([]interface{}); ok {
+					var inputStrings []string
+					for _, inItem := range inArray {
+						inString := getPathRelativeToCwd(
+							*substituteWithContext(inItem.(string), executionEnv))
+						inputStrings = append(inputStrings, fmt.Sprintf("\"%s\"", inString))
+						task.inputs = append(task.inputs, &RunnableTaskInput{
+							path: inString,
+						})
+					}
+					concatenatedInputs := strings.Join(inputStrings, " ")
+					// FIXME: probably redundant since we're using task.inputs
+					task.taskDeclaration.In = &concatenatedInputs
+				} else {
+					// assume string
+					inString := getPathRelativeToCwd(
+						*substituteWithContext(inValue.(string), executionEnv))
+					task.taskDeclaration.In = &inString
+					task.inputs = append(task.inputs, &RunnableTaskInput{
+						path: inString,
+					})
+				}
 			}
 
 			if inSha256Value, ok := runnableData["in.sha256"]; ok {
@@ -427,28 +484,22 @@ func main() {
 
 		Use: strings.Join(
 			[]string{
-				fmt.Sprintf("\n- <data source> | %s %s  # (read from STDIN)", COLORIZED_PROGRAM_NAME, color.CyanString("[transformer]")),
-				fmt.Sprintf("\n- %s %s", COLORIZED_PROGRAM_NAME, color.CyanString("[input-data] [transformer]")),
 				fmt.Sprintf("\n- %s %s", COLORIZED_PROGRAM_NAME, color.CyanString("[flags]")),
 				"\n",
-				"\n[input-data]  is the path to the input data file to be processed, or - to read from STDIN, or implied as STDIN",
-				"\n[transformer] is the path to the jsonata or jsonnet file to be used for transformation, or the code as a string",
-				"\n[flags]       specify arguments explicitly for more complex processing; see help",
+				"\n[validate]  is the path to the input data file to be processed, or - to read from STDIN, or implied as STDIN",
+				"\n[completions] is the path to the jsonata or jsonnet file to be used for transformation, or the code as a string",
 			},
 			"",
 		),
 		Short: "App transforms JSONL/XSV files based on transformation code.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 
-			validateDefintionFileFlag, _ := cmd.Flags().GetBool("reformat")
+			validateDefintionFileFlag, _ := cmd.Flags().GetBool("validate")
 			if validateDefintionFileFlag {
 				validateFlowDefinitionFile(FLOW_DEFINITION_FILE)
-			}
-
-			reformatDefinitionFileFlag, _ := cmd.Flags().GetBool("reformat")
-			if reformatDefinitionFileFlag {
 				reformattedFlowDefinition := reformatFlowDefinitionFile(FLOW_DEFINITION_FILE)
 				fmt.Println(reformattedFlowDefinition)
+				return nil
 			}
 
 			generateCompletionsFlag, _ := cmd.Flags().GetString("completions")
@@ -469,7 +520,6 @@ func main() {
 	}
 
 	rootCmd.Flags().Bool("validate", false, "asdf")
-	rootCmd.Flags().Bool("reformat", false, "asdf")
 	rootCmd.Flags().String("completions", "", "asdf")
 
 	if err := rootCmd.Execute(); err != nil {

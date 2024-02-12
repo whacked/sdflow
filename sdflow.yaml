@@ -32,9 +32,12 @@ schemas:
   run: ./go-jsonschema -p main $in | tee $out
 
 main-program:
-  in: main.go
+  in:  # currently sha256 is only supported for single input
+  - main.go
+  - ./runnable.go
+  - util.go
   out: sdflow
-  run: go build main.go
+  run: go build -o $out $in
 
 example-web-loader:
   in: https://example.com
