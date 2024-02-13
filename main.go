@@ -134,6 +134,10 @@ func renderCommand(task *RunnableTask) string {
 				return out
 			}(), " ",
 		)
+		// generate mappings for ${in[0]}, ${in[1]}, etc
+		for i, taskInput := range task.inputs {
+			vars[fmt.Sprintf("in[%d]", i)] = taskInput.path
+		}
 	}
 	if task.taskDeclaration.Out != nil {
 		vars["out"] = *task.taskDeclaration.Out
@@ -143,7 +147,7 @@ func renderCommand(task *RunnableTask) string {
 		return vars[varName]
 	}
 
-	renderedCommand := os.Expand(task.taskDeclaration.Run, mapper)
+	renderedCommand := os.Expand(*task.taskDeclaration.Run, mapper)
 	return renderedCommand
 }
 
@@ -403,7 +407,7 @@ func runFlowDefinitionProcessor(flowDefinitionFilePath string, shouldWriteOutSha
 
 			if runnableValue, ok := runnableData["run"]; ok {
 				runString := runnableValue.(string)
-				task.taskDeclaration.Run = runString
+				task.taskDeclaration.Run = &runString
 			} else {
 				log.Fatalf("error: %v", "run is required")
 			}

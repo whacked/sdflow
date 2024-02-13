@@ -2,9 +2,6 @@
 
 package main
 
-import "encoding/json"
-import "fmt"
-
 type RunnableSchemaJson struct {
 	// In corresponds to the JSON schema field "in".
 	In interface{} `json:"in,omitempty" yaml:"in,omitempty" mapstructure:"in,omitempty"`
@@ -31,25 +28,7 @@ type RunnableSchemaJson struct {
 	Pre *string `json:"pre,omitempty" yaml:"pre,omitempty" mapstructure:"pre,omitempty"`
 
 	// Run corresponds to the JSON schema field "run".
-	Run string `json:"run" yaml:"run" mapstructure:"run"`
+	Run *string `json:"run,omitempty" yaml:"run,omitempty" mapstructure:"run,omitempty"`
 }
 
 type RunnableSchemaJsonNotify map[string]interface{}
-
-// UnmarshalJSON implements json.Unmarshaler.
-func (j *RunnableSchemaJson) UnmarshalJSON(b []byte) error {
-	var raw map[string]interface{}
-	if err := json.Unmarshal(b, &raw); err != nil {
-		return err
-	}
-	if v, ok := raw["run"]; !ok || v == nil {
-		return fmt.Errorf("field run in RunnableSchemaJson: required")
-	}
-	type Plain RunnableSchemaJson
-	var plain Plain
-	if err := json.Unmarshal(b, &plain); err != nil {
-		return err
-	}
-	*j = RunnableSchemaJson(plain)
-	return nil
-}

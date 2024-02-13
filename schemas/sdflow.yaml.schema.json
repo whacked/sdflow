@@ -55,9 +55,7 @@
               "type": "string"
             }
           },
-          "required": [
-            "run"
-          ],
+          "required": [],
           "type": "object"
         }
       ]

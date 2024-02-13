@@ -26,6 +26,6 @@
       additionalProperties: true,
     },
   },
-  required: ['run'],
+  required: [],
   additionalProperties: false,
 }

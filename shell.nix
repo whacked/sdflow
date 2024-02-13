@@ -41,5 +41,6 @@ pkgs.mkShell {
 
   shellHook = ''
     source bash_autocomplete.sh
+    export PATH=$PWD:$PWD/result/bin:$PATH
   '';
 }
