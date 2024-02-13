@@ -1,12 +1,8 @@
-#!/usr/bin/env bash
-
-# Path to your YAML specification file.
 SPEC_FILE="./sdflow.yaml"
 
-# Function to generate auto-completion suggestions.
 _sdflow_auto_complete() {
     local cur_word="${COMP_WORDS[COMP_CWORD]}"
-    local suggestions=$(yq eval 'keys | .[]' "$SPEC_FILE" | grep "^$cur_word")
+    local suggestions=$(sdflow --targets)
 
     COMPREPLY=($(compgen -W "${suggestions}" -- "$cur_word"))
 }

@@ -25,6 +25,12 @@ const CACHE_DIRECTORY = ".sdflow.cache"
 //go:embed schemas/sdflow.yaml.schema.json
 var sdFlowSchema embed.FS
 
+//go:embed resources/bash_autocomplete.sh
+var bashAutoCompleteScript embed.FS
+
+//go:embed resources/zsh_autocomplete.sh
+var zshAutoCompleteScript embed.FS
+
 type RunnableTaskInput struct {
 	path string
 	// sha256 string
@@ -40,6 +46,12 @@ type RunnableTask struct {
 	inputs           []*RunnableTaskInput
 }
 
+func readResourceFile(embedFile embed.FS, name string) []byte {
+	resourceBytes, err := fs.ReadFile(embedFile, name)
+	bailOnError(err)
+	return resourceBytes
+}
+
 func validateFlowDefinitionFile(flowDefinitionFile string) {
 	var flowDefinitionObject map[string]interface{}
 	flowDefinitionSource, err := os.ReadFile(FLOW_DEFINITION_FILE)
@@ -47,8 +59,7 @@ func validateFlowDefinitionFile(flowDefinitionFile string) {
 	if err := yaml.Unmarshal([]byte(flowDefinitionSource), &flowDefinitionObject); err != nil {
 		log.Fatalf("FAILED TO READ YAML\nerror: %v", err)
 	}
-	validatorSchemaSource, err := fs.ReadFile(sdFlowSchema, "schemas/sdflow.yaml.schema.json")
-	bailOnError(err)
+	validatorSchemaSource := readResourceFile(sdFlowSchema, "schemas/sdflow.yaml.schema.json")
 	validator := jsonschema.MustCompileString("schemas/sdflow.yaml.schema.json", string(validatorSchemaSource))
 	if err := validator.Validate(flowDefinitionObject); err != nil {
 		log.Fatalf("SDFLOW FAILED TO VALIDATE\nerror: %v", err)
@@ -296,7 +307,17 @@ func populateTaskModTimes(task *RunnableTask) {
 	}
 }
 
-func runFlowDefinitionProcessor(flowDefinitionFilePath string, shouldWriteOutSha256 bool) {
+type ParsedFlowDefinition struct {
+	taskLookup       map[string]*RunnableTask
+	taskDependencies map[string][]string
+	executionEnv     map[string]string
+}
+
+func parseFlowDefinitionFile(flowDefinitionFilePath string) *ParsedFlowDefinition {
+
+	taskLookup := make(map[string]*RunnableTask)
+	taskDependencies := make(map[string][]string)
+	executionEnv := make(map[string]string)
 
 	var flowDefinitionObject map[string]interface{}
 	flowDefinitionSource, err := os.ReadFile(flowDefinitionFilePath)
@@ -304,8 +325,6 @@ func runFlowDefinitionProcessor(flowDefinitionFilePath string, shouldWriteOutSha
 	if err := yaml.Unmarshal([]byte(flowDefinitionSource), &flowDefinitionObject); err != nil {
 		log.Fatalf("error: %v", err)
 	}
-
-	executionEnv := make(map[string]string)
 
 	// first pass: compile the execution environment
 	for targetIdentifier, value := range flowDefinitionObject {
@@ -315,9 +334,6 @@ func runFlowDefinitionProcessor(flowDefinitionFilePath string, shouldWriteOutSha
 			executionEnv[targetIdentifier] = flowDefinitionObject[targetIdentifier].(string)
 		}
 	}
-
-	taskLookup := make(map[string]*RunnableTask)
-	taskDependencies := make(map[string][]string)
 
 	// second pass: retrieve tasks and substitute using executionEnv
 	for targetIdentifier, value := range flowDefinitionObject {
@@ -340,7 +356,8 @@ func runFlowDefinitionProcessor(flowDefinitionFilePath string, shouldWriteOutSha
 
 		case []interface{}: // compile subtargets
 			for _, subTarget := range ruleContent {
-				taskDependencies[substitutedTargetName] = append(taskDependencies[substitutedTargetName],
+				taskDependencies[substitutedTargetName] = append(
+					taskDependencies[substitutedTargetName],
 					*substituteWithContext(subTarget.(string), executionEnv))
 			}
 			task := RunnableTask{
@@ -430,20 +447,32 @@ func runFlowDefinitionProcessor(flowDefinitionFilePath string, shouldWriteOutSha
 		}
 	}
 
+	parsedFlowDefinition := ParsedFlowDefinition{
+		taskLookup:       taskLookup,
+		taskDependencies: taskDependencies,
+		executionEnv:     make(map[string]string),
+	}
+	return &parsedFlowDefinition
+}
+
+func runFlowDefinitionProcessor(flowDefinitionFilePath string, shouldWriteOutSha256 bool) {
+
+	parsedFlowDefinition := parseFlowDefinitionFile(flowDefinitionFilePath)
+
 	if len(os.Args) == 1 {
-		for targetIdentifier := range taskDependencies {
-			task := taskLookup[targetIdentifier]
+		for targetIdentifier := range parsedFlowDefinition.taskDependencies {
+			task := parsedFlowDefinition.taskLookup[targetIdentifier]
 			printVitalsForTask(task)
 		}
 	} else if len(os.Args) > 1 {
 		lastArg := os.Args[len(os.Args)-1]
 		// see if lastarg is in our lookup
-		if _, ok := taskLookup[lastArg]; !ok {
+		if _, ok := parsedFlowDefinition.taskLookup[lastArg]; !ok {
 			fmt.Printf("Task %s not found\n", lastArg)
 			return
 		} else {
-			task := taskLookup[lastArg]
-			runTask(task, executionEnv, shouldWriteOutSha256)
+			task := parsedFlowDefinition.taskLookup[lastArg]
+			runTask(task, parsedFlowDefinition.executionEnv, shouldWriteOutSha256)
 
 			if shouldWriteOutSha256 {
 				updatedYamlString := updateOutSha256ForTarget(FLOW_DEFINITION_FILE, task.targetKey, *task.taskDeclaration.OutSha256)
@@ -453,7 +482,9 @@ func runFlowDefinitionProcessor(flowDefinitionFilePath string, shouldWriteOutSha
 				if fileInfo, err := os.Stat(FLOW_DEFINITION_FILE); err == nil {
 					currentFileMode = fileInfo.Mode()
 				}
-				err := os.WriteFile(FLOW_DEFINITION_FILE, []byte(outputYamlString), currentFileMode)
+				flowDefinitionSource, err := os.ReadFile(FLOW_DEFINITION_FILE)
+				bailOnError(err)
+				err = os.WriteFile(FLOW_DEFINITION_FILE, []byte(outputYamlString), currentFileMode)
 				if err != nil {
 					log.Printf("original file: %s", flowDefinitionSource)
 					log.Fatalf("error: %v", err)
@@ -501,8 +532,17 @@ func main() {
 			},
 			"",
 		),
-		Short: "App transforms JSONL/XSV files based on transformation code.",
+		Short: "flow runner",
 		RunE: func(cmd *cobra.Command, args []string) error {
+
+			targetsFlag, _ := cmd.Flags().GetBool("targets")
+			if targetsFlag {
+				parsedFlowDefinition := parseFlowDefinitionFile(FLOW_DEFINITION_FILE)
+				for _, task := range parsedFlowDefinition.taskLookup {
+					fmt.Fprintf(os.Stdout, "%s\n", task.targetName)
+				}
+				return nil
+			}
 
 			validateDefintionFileFlag, _ := cmd.Flags().GetBool("validate")
 			if validateDefintionFileFlag {
@@ -516,7 +556,15 @@ func main() {
 			if generateCompletionsFlag != "" {
 				switch generateCompletionsFlag {
 				case "bash":
+					fmt.Println(string(readResourceFile(bashAutoCompleteScript, "resources/bash_autocomplete.sh")))
+					return nil
+
 				case "zsh":
+					fmt.Println(string(readResourceFile(zshAutoCompleteScript, "resources/zsh_autocomplete.sh")))
+					return nil
+
+				default:
+					return fmt.Errorf("unsupported shell type: %s", generateCompletionsFlag)
 				}
 			}
 
@@ -531,9 +579,10 @@ func main() {
 		},
 	}
 
-	rootCmd.Flags().Bool("validate", false, "asdf")
-	rootCmd.Flags().String("completions", "", "asdf")
-	rootCmd.Flags().Bool("updatehash", false, "asdf")
+	rootCmd.Flags().Bool("validate", false, "validate the flow definition file")
+	rootCmd.Flags().String("completions", "", "get shell completion code for the given shell type")
+	rootCmd.Flags().Bool("updatehash", false, "update out.sha256 for the target in the flow definition file after running the target")
+	rootCmd.Flags().Bool("targets", false, "list all defined targets")
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
