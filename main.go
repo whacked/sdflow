@@ -202,7 +202,9 @@ func saveTaskInputToCache(task *RunnableTask) string {
 }
 
 func runTask(task *RunnableTask, env map[string]string, shouldUpdateOutSha256 bool) {
-	fmt.Printf("Running task: %+v (%d dependencies)\n", task.targetName, len(task.taskDependencies))
+	fmt.Fprintf(
+		os.Stderr,
+		"Running task: %+v (%d dependencies)\n", task.targetName, len(task.taskDependencies))
 
 	for _, dep := range task.taskDependencies {
 		fmt.Println("Running dependency:", dep.targetName)
@@ -214,49 +216,72 @@ func runTask(task *RunnableTask, env map[string]string, shouldUpdateOutSha256 bo
 		return
 	}
 
-	if task.taskDeclaration.InSha256 != nil && task.taskDeclaration.In != nil && len(task.inputs) == 1 {
-		fmt.Println("Checking sha256 of input file")
+	var shouldCheckOutput bool = false
+	if task.taskDeclaration.In != nil && len(task.inputs) == 1 {
+		if task.taskDeclaration.InSha256 != nil {
+			fmt.Println("Checking sha256 of input file")
 
-		if isRemotePath(task.inputs[0].path) {
-			if isTaskInputInCache(task) {
-				cachedInputPath := getTaskInputCachePath(task)
-				fmt.Println("Using cached input", cachedInputPath)
-				return
+			if isRemotePath(task.inputs[0].path) {
+				if isTaskInputInCache(task) {
+					cachedInputPath := getTaskInputCachePath(task)
+					trace(fmt.Sprintf("Using cached input %s", cachedInputPath))
+					return
+				} else {
+					cachedInputPath := saveTaskInputToCache(task)
+					trace(fmt.Sprintf("saved input to cache %s", cachedInputPath))
+					return
+				}
 			} else {
-				cachedInputPath := saveTaskInputToCache(task)
-				fmt.Println("saved input to cache", cachedInputPath)
-				return
+				if isFileBytesMatchingSha256(task.inputs[0].path, *task.taskDeclaration.InSha256) {
+					trace("IN SHA256 matches!")
+				} else {
+					trace("IN SHA256 mismatch!")
+				}
 			}
-		} else {
-			if isFileBytesMatchingSha256(task.inputs[0].path, *task.taskDeclaration.InSha256) {
-				fmt.Println("IN SHA256 matches!")
-			} else {
-				fmt.Println("IN SHA256 mismatch!")
+		} else if task.taskDeclaration.Out != nil && task.taskDeclaration.Run == nil {
+			fmt.Println("using built-in downloaders")
+			shouldDownloadFile := false
+			if isRemotePath(task.inputs[0].path) {
+				if _, err := os.Stat(*task.taskDeclaration.Out); err == nil {
+					if !isFileBytesMatchingSha256(*task.taskDeclaration.Out, *task.taskDeclaration.OutSha256) {
+						fmt.Fprintf(os.Stderr, "warning: SHA256 mismatch for:\n%s; overwriting file", *task.taskDeclaration.Out)
+						shouldDownloadFile = true
+					}
+				} else {
+					shouldDownloadFile = true
+				}
+
+				if shouldDownloadFile {
+					downloadFileToLocalPath(task.inputs[0].path, *task.taskDeclaration.Out)
+				}
 			}
 		}
 	}
 
-	command := renderCommand(task)
-	fmt.Fprint(
-		os.Stderr,
-		color.GreenString("Command: %s\n", command),
-	)
+	if task.taskDeclaration.Run != nil {
+		command := renderCommand(task)
+		fmt.Fprint(
+			os.Stderr,
+			color.GreenString("Command: %s\n", command),
+		)
 
-	cmd := exec.Command("bash", "-c", command)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+		cmd := exec.Command("bash", "-c", command)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
 
-	var cmdEnv []string
-	cmdEnv = append(cmdEnv, os.Environ()...)
-	for key, value := range env {
-		cmdEnv = append(cmdEnv, fmt.Sprintf("%s=%s", key, value))
-	}
-	cmd.Env = cmdEnv
+		var cmdEnv []string
+		cmdEnv = append(cmdEnv, os.Environ()...)
+		for key, value := range env {
+			cmdEnv = append(cmdEnv, fmt.Sprintf("%s=%s", key, value))
+		}
+		cmd.Env = cmdEnv
 
-	err := cmd.Run()
-	if err != nil {
-		fmt.Println("Error executing command:", err)
-		return
+		err := cmd.Run()
+		if err != nil {
+			fmt.Println("Error executing command:", err)
+			return
+		}
+		shouldCheckOutput = true
 	}
 
 	if shouldUpdateOutSha256 {
@@ -264,12 +289,12 @@ func runTask(task *RunnableTask, env map[string]string, shouldUpdateOutSha256 bo
 		bailOnError(err)
 		outputSha256 := getBytesSha256(outputFileBytes)
 		task.taskDeclaration.OutSha256 = &outputSha256
-		fmt.Println("Updated OUT SHA256:", outputSha256)
-	} else if task.taskDeclaration.OutSha256 != nil {
+		trace(fmt.Sprintf("Updated OUT SHA256: %s", outputSha256))
+	} else if shouldCheckOutput && task.taskDeclaration.OutSha256 != nil {
 		if isFileBytesMatchingSha256(*task.taskDeclaration.Out, *task.taskDeclaration.OutSha256) {
-			fmt.Println("OUT SHA256 matches!")
+			trace("OUT SHA256 matches!")
 		} else {
-			fmt.Println("OUT SHA256 mismatch!")
+			trace("OUT SHA256 mismatch!")
 		}
 	}
 }
@@ -425,8 +450,6 @@ func parseFlowDefinitionFile(flowDefinitionFilePath string) *ParsedFlowDefinitio
 			if runnableValue, ok := runnableData["run"]; ok {
 				runString := runnableValue.(string)
 				task.taskDeclaration.Run = &runString
-			} else {
-				log.Fatalf("error: %v", "run is required")
 			}
 			populateTaskModTimes(&task)
 
@@ -569,10 +592,6 @@ func main() {
 			}
 
 			shouldUpdateOutSha256, _ := cmd.Flags().GetBool("updatehash")
-
-			// if len(args) == 0 {
-			// 	return fmt.Errorf("need at least a transformer to do anything")
-			// }
 
 			runFlowDefinitionProcessor(FLOW_DEFINITION_FILE, shouldUpdateOutSha256)
 			return nil

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"regexp"
 	"strings"
 
@@ -26,6 +27,10 @@ func bailOnError(err error) {
 	if err != nil {
 		log.Fatalf("error: %v", err)
 	}
+}
+
+func trace(msg string) {
+	fmt.Fprintf(os.Stderr, "[TRACE] %s\n", msg)
 }
 
 func topSortDependencies(taskDependencies map[string][]string, targetTask string) []string {
@@ -217,6 +222,43 @@ func getRemoteResourceBytes(remoteResourceLocation string) []byte {
 	return nil
 }
 
+func commandExists(cmd string) bool {
+	_, err := exec.LookPath(cmd)
+	return err == nil
+}
+
+func downloadFileToLocalPath(url, outputPath string) error {
+	if strings.HasPrefix(url, "http") {
+		if commandExists("curl") {
+			trace("downloading using curl")
+			return exec.Command("curl", "-o", outputPath, url).Run()
+		} else if commandExists("wget") {
+			trace("downloading using wget")
+			return exec.Command("wget", "-O", outputPath, url).Run()
+		} else {
+			trace("downloading using built-in http downloader")
+			bytes := downloadRemoteFileFromHttp(url)
+			return os.WriteFile(outputPath, bytes, 0644)
+		}
+	} else if strings.HasPrefix(url, "s3://") {
+		// FIXME: envvar stuff needed? it's fugly
+		if commandExists("aws") && os.Getenv("AWS_ACCESS_KEY_ID") != "" && os.Getenv("AWS_SECRET_ACCESS_KEY") != "" {
+			trace("downloading using aws")
+			return exec.Command("aws", "s3", "cp", url, outputPath).Run()
+		} else if commandExists("mc") && os.Getenv("MINIO_ACCESS_KEY") != "" && os.Getenv("MINIO_SECRET_KEY") != "" {
+			trace("downloading using mc")
+			return exec.Command("mc", "cp", url, outputPath).Run()
+		} else {
+			trace("using built-in s3 downloader")
+			bytes := downloadRemoteFileFromS3(url)
+			if len(bytes) > 0 {
+				return os.WriteFile(outputPath, bytes, 0644)
+			}
+		}
+	}
+	return nil
+}
+
 func getBytesSha256(bytes []byte) string {
 	bytesSha256 := sha256.Sum256(bytes)
 	return hex.EncodeToString(bytesSha256[:])
@@ -227,6 +269,7 @@ func isBytesMatchingSha256(bytes []byte, precomputedSha256 string) bool {
 }
 
 func isFileBytesMatchingSha256(filePath string, precomputedSha256 string) bool {
+	trace(fmt.Sprintf("checking sha256 of file: %s", filePath))
 	fileBytes, err := os.ReadFile(filePath)
 	bailOnError(err)
 	return isBytesMatchingSha256(fileBytes, precomputedSha256)
