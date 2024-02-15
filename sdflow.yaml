@@ -32,8 +32,9 @@ build:
     - main.go
     - ./runnable.go
     - util.go
-  out: sdflow
-  run: go build -o $out $in
+  out: build/bin/sdflow
+  # make dirs for nix build compat
+  run: mkdir -p $(dirname $out); go build -o $out $in; ln -sf ./build ./result
 
 ./runnable.go:
   in:
@@ -46,7 +47,17 @@ example-web-loader:
   in.sha256: ea8fac7c65fb589b0d53560f5251f74f9e9b243478dcb6b3ea79b5e36449c8d9
   run: curl -s $in | grep -i title
 
+example-web-loader-to-disk:
+  in: https://example.com
+  out: example.com-index.html
+  out.sha256: ea8fac7c65fb589b0d53560f5251f74f9e9b243478dcb6b3ea79b5e36449c8d9
+
 example-s3-loader:
   in: s3://answer-reformulation-pds/README.txt
   in.sha256: b24b59e210cefd4d964413ac555e4573470909f8aa3d16b6b9a65ddb04490b69
   run: date
+
+example-s3-loader-to-disk:
+  in: s3://answer-reformulation-pds/README.txt
+  out: answer-reformulation-pds-README.txt
+  out.sha256: b24b59e210cefd4d964413ac555e4573470909f8aa3d16b6b9a65ddb04490b69

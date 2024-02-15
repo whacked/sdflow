@@ -40,7 +40,7 @@ pkgs.mkShell {
   ];
 
   shellHook = ''
-    export PATH=$PWD:$PWD/result/bin:$PATH
+    export PATH=$PWD/result/bin:$PATH
     eval "$(sdflow --completions bash)"
   '';
 }
