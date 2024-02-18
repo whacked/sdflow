@@ -1,11 +1,11 @@
-SPEC_FILE="./sdflow.yaml"
+SPEC_FILE="./Schmakefile"
 
-_sdflow_auto_complete() {
+_schmake_auto_complete() {
     local cur_word="${COMP_WORDS[COMP_CWORD]}"
-    local suggestions=$(sdflow --targets)
+    local suggestions=$(schmake --targets)
 
     COMPREPLY=($(compgen -W "${suggestions}" -- "$cur_word"))
 }
 
-# Register the auto-completion function for the 'sdflow' command.
-complete -F _sdflow_auto_complete sdflow
+# Register the auto-completion function for the 'schmake' command.
+complete -F _schmake_auto_complete schmake

@@ -19,11 +19,16 @@ import (
 	yaml "gopkg.in/yaml.v3"
 )
 
-const FLOW_DEFINITION_FILE = "sdflow.yaml"
-const CACHE_DIRECTORY = ".sdflow.cache"
+// declare list of candidates for the flow definition file
+var FLOW_DEFINITION_FILE_CANDIDATES = []string{
+	"Schmakefile",
+	"schmakefile",
+}
+var FLOW_DEFINITION_FILE string
+var CACHE_DIRECTORY string = ".schmake.cache"
 
-//go:embed schemas/sdflow.yaml.schema.json
-var sdFlowSchema embed.FS
+//go:embed schemas/Schmakefile.schema.json
+var schmakefileSchema embed.FS
 
 //go:embed resources/bash_autocomplete.sh
 var bashAutoCompleteScript embed.FS
@@ -46,6 +51,16 @@ type RunnableTask struct {
 	inputs           []*RunnableTaskInput
 }
 
+func discoverFlowDefinitionFile() string {
+	for _, candidate := range FLOW_DEFINITION_FILE_CANDIDATES {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	log.Fatal("No Schmakefile found")
+	return ""
+}
+
 func readResourceFile(embedFile embed.FS, name string) []byte {
 	resourceBytes, err := fs.ReadFile(embedFile, name)
 	bailOnError(err)
@@ -59,10 +74,33 @@ func validateFlowDefinitionFile(flowDefinitionFile string) {
 	if err := yaml.Unmarshal([]byte(flowDefinitionSource), &flowDefinitionObject); err != nil {
 		log.Fatalf("FAILED TO READ YAML\nerror: %v", err)
 	}
-	validatorSchemaSource := readResourceFile(sdFlowSchema, "schemas/sdflow.yaml.schema.json")
-	validator := jsonschema.MustCompileString("schemas/sdflow.yaml.schema.json", string(validatorSchemaSource))
+	validatorSchemaSource := readResourceFile(schmakefileSchema, "schemas/Schmakefile.yaml.schema.json")
+	validator := jsonschema.MustCompileString("schemas/Schmakefile.yaml.schema.json", string(validatorSchemaSource))
 	if err := validator.Validate(flowDefinitionObject); err != nil {
-		log.Fatalf("SDFLOW FAILED TO VALIDATE\nerror: %v", err)
+		log.Fatalf("SCHMAKE FAILED TO VALIDATE\nerror: %v", err)
+	}
+}
+
+func prettyPrintTask(task *RunnableTask) {
+	fmt.Println("Task:", task.targetName)
+	if task.taskDeclaration == nil {
+		fmt.Println("  No task declaration found")
+		return
+	}
+	if task.taskDeclaration.In != nil {
+		fmt.Println("  In:", task.taskDeclaration.In)
+	}
+	if task.taskDeclaration.Out != nil {
+		fmt.Println("  Out:", *task.taskDeclaration.Out)
+	}
+	if task.taskDeclaration.Run != nil {
+		fmt.Println("  Run:", *task.taskDeclaration.Run)
+	}
+	if task.taskDeclaration.InSha256 != nil {
+		fmt.Println("  In SHA256:", *task.taskDeclaration.InSha256)
+	}
+	if task.taskDeclaration.OutSha256 != nil {
+		fmt.Println("  Out SHA256:", *task.taskDeclaration.OutSha256)
 	}
 }
 
@@ -93,9 +131,10 @@ func printVitalsForTask(task *RunnableTask) {
 	}
 
 	fmt.Fprintf(os.Stderr,
-		"%s [%s]\n  %s --> ",
+		"%s [%s] (%d)\n  %s --> ",
 		upToDateString,
 		color.HiWhiteString("%s", task.targetName),
+		len(task.taskDependencies),
 		color.YellowString("%s", strings.Join(
 			func() []string {
 				var out []string
@@ -155,7 +194,12 @@ func renderCommand(task *RunnableTask) string {
 	}
 
 	mapper := func(varName string) string {
-		return vars[varName]
+		// check if varName is in vars
+		if vars[varName] != "" {
+			return vars[varName]
+		} else {
+			return os.Getenv(varName)
+		}
 	}
 
 	renderedCommand := os.Expand(*task.taskDeclaration.Run, mapper)
@@ -205,6 +249,7 @@ func runTask(task *RunnableTask, env map[string]string, shouldUpdateOutSha256 bo
 	fmt.Fprintf(
 		os.Stderr,
 		"Running task: %+v (%d dependencies)\n", task.targetName, len(task.taskDependencies))
+	printVitalsForTask((task))
 
 	for _, dep := range task.taskDependencies {
 		fmt.Println("Running dependency:", dep.targetName)
@@ -253,6 +298,7 @@ func runTask(task *RunnableTask, env map[string]string, shouldUpdateOutSha256 bo
 
 				if shouldDownloadFile {
 					downloadFileToLocalPath(task.inputs[0].path, *task.taskDeclaration.Out)
+					shouldCheckOutput = true
 				}
 			}
 		}
@@ -284,7 +330,7 @@ func runTask(task *RunnableTask, env map[string]string, shouldUpdateOutSha256 bo
 		shouldCheckOutput = true
 	}
 
-	if shouldUpdateOutSha256 {
+	if shouldUpdateOutSha256 && task.taskDeclaration.Out != nil {
 		outputFileBytes, err := os.ReadFile(*task.taskDeclaration.Out)
 		bailOnError(err)
 		outputSha256 := getBytesSha256(outputFileBytes)
@@ -343,6 +389,12 @@ func parseFlowDefinitionFile(flowDefinitionFilePath string) *ParsedFlowDefinitio
 	taskLookup := make(map[string]*RunnableTask)
 	taskDependencies := make(map[string][]string)
 	executionEnv := make(map[string]string)
+
+	// add keyvals from environ to executionEnv
+	for _, envVar := range os.Environ() {
+		parts := strings.Split(envVar, "=")
+		executionEnv[parts[0]] = parts[1]
+	}
 
 	var flowDefinitionObject map[string]interface{}
 	flowDefinitionSource, err := os.ReadFile(flowDefinitionFilePath)
@@ -408,12 +460,14 @@ func parseFlowDefinitionFile(flowDefinitionFilePath string) *ParsedFlowDefinitio
 					fileAbsPath := getPathRelativeToCwd(
 						*substituteWithContext(outputPathValue.(string), executionEnv))
 					task.taskDeclaration.Out = &fileAbsPath
+					taskLookup[fileAbsPath] = &task
 				}
 			}
 
 			if inValue, ok := runnableData["in"]; ok {
 				task.inputs = make([]*RunnableTaskInput, 0)
 				if inArray, ok := inValue.([]interface{}); ok {
+					// array of input target names / files
 					var inputStrings []string
 					for _, inItem := range inArray {
 						inString := getPathRelativeToCwd(
@@ -422,6 +476,8 @@ func parseFlowDefinitionFile(flowDefinitionFilePath string) *ParsedFlowDefinitio
 						task.inputs = append(task.inputs, &RunnableTaskInput{
 							path: inString,
 						})
+						taskDependencies[substitutedTargetName] = append(
+							taskDependencies[substitutedTargetName], inString)
 					}
 					concatenatedInputs := strings.Join(inputStrings, " ")
 					// FIXME: probably redundant since we're using task.inputs
@@ -434,6 +490,8 @@ func parseFlowDefinitionFile(flowDefinitionFilePath string) *ParsedFlowDefinitio
 					task.inputs = append(task.inputs, &RunnableTaskInput{
 						path: inString,
 					})
+					taskDependencies[substitutedTargetName] = append(
+						taskDependencies[substitutedTargetName], inString)
 				}
 			}
 
@@ -463,10 +521,12 @@ func parseFlowDefinitionFile(flowDefinitionFilePath string) *ParsedFlowDefinitio
 		topSortedDependencies := topSortDependencies(taskDependencies, targetIdentifier)
 		for _, dep := range topSortedDependencies[:len(topSortedDependencies)-1] {
 			depTask := taskLookup[dep]
-			if depTask.taskDeclaration == nil {
-				bailOnError(fmt.Errorf("subtask %s has no definition!?", dep))
+			if depTask != nil {
+				if depTask.taskDeclaration == nil {
+					bailOnError(fmt.Errorf("subtask %s has no definition!?", dep))
+				}
+				task.taskDependencies = append(task.taskDependencies, depTask)
 			}
-			task.taskDependencies = append(task.taskDependencies, depTask)
 		}
 	}
 
@@ -497,7 +557,7 @@ func runFlowDefinitionProcessor(flowDefinitionFilePath string, shouldWriteOutSha
 			task := parsedFlowDefinition.taskLookup[lastArg]
 			runTask(task, parsedFlowDefinition.executionEnv, shouldWriteOutSha256)
 
-			if shouldWriteOutSha256 {
+			if shouldWriteOutSha256 && task.taskDeclaration.OutSha256 != nil {
 				updatedYamlString := updateOutSha256ForTarget(FLOW_DEFINITION_FILE, task.targetKey, *task.taskDeclaration.OutSha256)
 				outputYamlString := addInterveningSpacesToRootLevelBlocks(updatedYamlString)
 				// re-output the file
@@ -543,6 +603,10 @@ func reformatFlowDefinitionFile(flowDefinitionFile string) string {
 func main() {
 
 	COLORIZED_PROGRAM_NAME := color.HiBlueString(os.Args[0])
+	FLOW_DEFINITION_FILE = discoverFlowDefinitionFile()
+	if os.Getenv("SCHMAKE_CACHE_DIRECTORY") != "" {
+		CACHE_DIRECTORY = os.Getenv("SCHMAKE_CACHE_DIRECTORY")
+	}
 
 	var rootCmd = &cobra.Command{
 

@@ -13,7 +13,7 @@
 }:
 
 buildGoApplication {
-  pname = "sdflow";
+  pname = "schmake";
   version = "0.0.1";
   pwd = ./.;
   src = ./.;
