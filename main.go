@@ -30,11 +30,17 @@ var CACHE_DIRECTORY string = ".schmake.cache"
 //go:embed schemas/Schmakefile.schema.json
 var schmakefileSchema embed.FS
 
+const schmakeFileSchemaPath = "schemas/Schmakefile.schema.json"
+
 //go:embed resources/bash_autocomplete.sh
 var bashAutoCompleteScript embed.FS
 
+const bashAutoCompleteScriptPath = "resources/bash_autocomplete.sh"
+
 //go:embed resources/zsh_autocomplete.sh
 var zshAutoCompleteScript embed.FS
+
+const zshAutoCompleteScriptPath = "resources/zsh_autocomplete.sh"
 
 type RunnableTaskInput struct {
 	path string
@@ -74,8 +80,8 @@ func validateFlowDefinitionFile(flowDefinitionFile string) {
 	if err := yaml.Unmarshal([]byte(flowDefinitionSource), &flowDefinitionObject); err != nil {
 		log.Fatalf("FAILED TO READ YAML\nerror: %v", err)
 	}
-	validatorSchemaSource := readResourceFile(schmakefileSchema, "schemas/Schmakefile.yaml.schema.json")
-	validator := jsonschema.MustCompileString("schemas/Schmakefile.yaml.schema.json", string(validatorSchemaSource))
+	validatorSchemaSource := readResourceFile(schmakefileSchema, schmakeFileSchemaPath)
+	validator := jsonschema.MustCompileString(schmakeFileSchemaPath, string(validatorSchemaSource))
 	if err := validator.Validate(flowDefinitionObject); err != nil {
 		log.Fatalf("SCHMAKE FAILED TO VALIDATE\nerror: %v", err)
 	}
@@ -104,12 +110,10 @@ func prettyPrintTask(task *RunnableTask) {
 	}
 }
 
-func printVitalsForTask(task *RunnableTask) {
-	if task.taskDeclaration == nil {
-		return
+func checkIfOutputMoreRecentThanInputs(task *RunnableTask) bool {
+	if task.taskDeclaration.Out == nil {
+		return false
 	}
-
-	var upToDateString string
 	isOutputMoreRecent := true
 	for _, taskInput := range task.inputs {
 		if _, err := os.Stat(taskInput.path); err == nil {
@@ -122,7 +126,16 @@ func printVitalsForTask(task *RunnableTask) {
 			}
 		}
 	}
-	if isOutputMoreRecent {
+	return isOutputMoreRecent
+}
+
+func printVitalsForTask(task *RunnableTask) {
+	if task.taskDeclaration == nil {
+		return
+	}
+
+	var upToDateString string
+	if checkIfOutputMoreRecentThanInputs(task) {
 		upToDateString = color.GreenString("current")
 	} else if task.taskDeclaration.Out == nil {
 		upToDateString = color.MagentaString("always ")
@@ -250,6 +263,10 @@ func runTask(task *RunnableTask, env map[string]string, shouldUpdateOutSha256 bo
 		os.Stderr,
 		"Running task: %+v (%d dependencies)\n", task.targetName, len(task.taskDependencies))
 	printVitalsForTask((task))
+	if checkIfOutputMoreRecentThanInputs(task) {
+		fmt.Println("Output is up to date")
+		return
+	}
 
 	for _, dep := range task.taskDependencies {
 		fmt.Println("Running dependency:", dep.targetName)
@@ -643,11 +660,11 @@ func main() {
 			if generateCompletionsFlag != "" {
 				switch generateCompletionsFlag {
 				case "bash":
-					fmt.Println(string(readResourceFile(bashAutoCompleteScript, "resources/bash_autocomplete.sh")))
+					fmt.Println(string(readResourceFile(bashAutoCompleteScript, bashAutoCompleteScriptPath)))
 					return nil
 
 				case "zsh":
-					fmt.Println(string(readResourceFile(zshAutoCompleteScript, "resources/zsh_autocomplete.sh")))
+					fmt.Println(string(readResourceFile(zshAutoCompleteScript, zshAutoCompleteScriptPath)))
 					return nil
 
 				default:
