@@ -135,43 +135,45 @@ func printVitalsForTask(task *RunnableTask) {
 	}
 
 	var upToDateString string
+	var coloringFunc func(format string, a ...interface{}) string
 	if checkIfOutputMoreRecentThanInputs(task) {
 		upToDateString = color.GreenString("current")
+		coloringFunc = color.HiGreenString
 	} else if task.taskDeclaration.Out == nil {
-		upToDateString = color.MagentaString("always ")
+		upToDateString = color.MagentaString("always")
+		coloringFunc = color.HiMagentaString
 	} else {
-		upToDateString = color.RedString("stale  ")
+		upToDateString = color.RedString("stale")
+		coloringFunc = color.HiRedString
 	}
 
 	fmt.Fprintf(os.Stderr,
-		"%s [%s] (%d)\n  %s --> ",
-		upToDateString,
-		color.HiWhiteString("%s", task.targetName),
-		len(task.taskDependencies),
-		color.YellowString("%s", strings.Join(
-			func() []string {
-				var out []string
-				for _, taskInput := range task.inputs {
-					out = append(out, taskInput.path)
-				}
-				return out
-			}(), "\n  ")),
+		"╭─🮤🮤%s🮥🮥\n",
+		coloringFunc("%s", task.targetName),
 	)
 
+	for _, taskInput := range task.inputs {
+		fmt.Fprintf(os.Stderr,
+			"├ %s\n",
+			color.WhiteString("%s", taskInput.path),
+		)
+	}
+
+	fmt.Fprintf(os.Stderr, "╰─▶ ")
 	if task.taskDeclaration.Out == nil {
 		fmt.Fprint(
 			os.Stderr,
 			color.CyanString("%s", "<STDOUT>"),
 		)
 	} else {
-		fmt.Fprintf(
-			os.Stderr,
+		fmt.Fprintf(os.Stderr,
 			"%s",
-			color.BlueString("%s", *task.taskDeclaration.Out),
+			color.HiBlueString("%s", *task.taskDeclaration.Out),
 		)
 	}
+	fmt.Fprintf(os.Stderr, " (%s)", upToDateString)
 
-	fmt.Fprintf(os.Stderr, "\n")
+	fmt.Fprintf(os.Stderr, "\n\n")
 }
 
 func substituteWithContext(s string, context map[string]string) *string {
