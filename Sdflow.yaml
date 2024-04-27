@@ -9,16 +9,16 @@ GENERATORS_DIR: ./generators
 # output goes to stdout
 self-validate:
   in:
-  - ${SCHEMAS_DIR}/Schmakefile.schema.json
-  - Schmakefile
+  - ${SCHEMAS_DIR}/Sdflow.yaml.schema.json
+  - Sdflow.yaml
   run: check-jsonschema --schemafile ${in[0]} ${in[1]}
 
 # if "out" is not specified,
 # AND the entry key begins with a file identifier
 # (ONLY ./, / are recognized),
 # the entry key is taken as the output file path
-${SCHEMAS_DIR}/Schmakefile.schema.json:
-  in: ${GENERATORS_DIR}/Schmakefile.schema.jsonnet
+${SCHEMAS_DIR}/Sdflow.yaml.schema.json:
+  in: ${GENERATORS_DIR}/Sdflow.yaml.schema.jsonnet
   run: jsonnet $in | jq -S | tee $out
   out.sha256: 1c8a656566dacfaaaece7b5e3e52a59faca12d3803443a1a56fdd5a9a7b8e347
 
@@ -28,7 +28,7 @@ ${SCHEMAS_DIR}/runnable.schema.json:
 
 # multiple inputs
 schemas:
-  - ${SCHEMAS_DIR}/Schmakefile.schema.json
+  - ${SCHEMAS_DIR}/Sdflow.yaml.schema.json
   - ${SCHEMAS_DIR}/runnable.schema.json
 
 build:
@@ -36,7 +36,7 @@ build:
     - main.go
     - ./runnable.go
     - util.go
-  out: build/bin/schmake
+  out: build/bin/sdflow
   # make dirs for nix build compat
   run: mkdir -p $(dirname $out); go build -o $out $in; ln -sf ./build ./result
 

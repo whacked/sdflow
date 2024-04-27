@@ -1,4 +1,4 @@
-module github.com/whacked/schmake
+module github.com/whacked/sdflow
 
 go 1.20
 

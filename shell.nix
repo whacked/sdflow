@@ -41,6 +41,6 @@ pkgs.mkShell {
 
   shellHook = ''
     export PATH=$PWD/result/bin:$PATH
-    eval "$(schmake --completions bash)"
+    eval "$(sdflow --completions bash)"
   '';
 }

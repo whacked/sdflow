@@ -21,16 +21,16 @@ import (
 
 // declare list of candidates for the flow definition file
 var FLOW_DEFINITION_FILE_CANDIDATES = []string{
-	"Schmakefile",
-	"schmakefile",
+	"Sdflow.yaml",
+	"sdflow.yaml",
 }
 var FLOW_DEFINITION_FILE string
-var CACHE_DIRECTORY string = ".schmake.cache"
+var CACHE_DIRECTORY string = ".sdflow.cache"
 
-//go:embed schemas/Schmakefile.schema.json
-var schmakefileSchema embed.FS
+//go:embed schemas/Sdflow.yaml.schema.json
+var sdflowSpecFileSchema embed.FS
 
-const schmakeFileSchemaPath = "schemas/Schmakefile.schema.json"
+const sdflowSpecFileSchemaPath = "schemas/Sdflow.yaml.schema.json"
 
 //go:embed resources/bash_autocomplete.sh
 var bashAutoCompleteScript embed.FS
@@ -63,7 +63,7 @@ func discoverFlowDefinitionFile() string {
 			return candidate
 		}
 	}
-	log.Fatal("No Schmakefile found")
+	log.Fatal("No Sdflow.yaml found")
 	return ""
 }
 
@@ -80,10 +80,10 @@ func validateFlowDefinitionFile(flowDefinitionFile string) {
 	if err := yaml.Unmarshal([]byte(flowDefinitionSource), &flowDefinitionObject); err != nil {
 		log.Fatalf("FAILED TO READ YAML\nerror: %v", err)
 	}
-	validatorSchemaSource := readResourceFile(schmakefileSchema, schmakeFileSchemaPath)
-	validator := jsonschema.MustCompileString(schmakeFileSchemaPath, string(validatorSchemaSource))
+	validatorSchemaSource := readResourceFile(sdflowSpecFileSchema, sdflowSpecFileSchemaPath)
+	validator := jsonschema.MustCompileString(sdflowSpecFileSchemaPath, string(validatorSchemaSource))
 	if err := validator.Validate(flowDefinitionObject); err != nil {
-		log.Fatalf("SCHMAKE FAILED TO VALIDATE\nerror: %v", err)
+		log.Fatalf("SDFLOW YAML FAILED TO VALIDATE\nerror: %v", err)
 	}
 }
 
@@ -621,8 +621,8 @@ func main() {
 
 	COLORIZED_PROGRAM_NAME := color.HiBlueString(os.Args[0])
 	FLOW_DEFINITION_FILE = discoverFlowDefinitionFile()
-	if os.Getenv("SCHMAKE_CACHE_DIRECTORY") != "" {
-		CACHE_DIRECTORY = os.Getenv("SCHMAKE_CACHE_DIRECTORY")
+	if os.Getenv("SDFLOW_CACHE_DIRECTORY") != "" {
+		CACHE_DIRECTORY = os.Getenv("SDFLOW_CACHE_DIRECTORY")
 	}
 
 	var rootCmd = &cobra.Command{
