@@ -148,7 +148,7 @@ func printVitalsForTask(task *RunnableTask) {
 	}
 
 	fmt.Fprintf(os.Stderr,
-		"╭─🮤🮤%s🮥🮥\n",
+		"╭─❮❮ %s ❯❯\n",
 		coloringFunc("%s", task.targetName),
 	)
 
@@ -403,6 +403,8 @@ type ParsedFlowDefinition struct {
 	executionEnv     map[string]string
 }
 
+func createTaskFromRunnableKeyVals(runnableData map[string]interface{}, executionEnv map[string]string) *RunnableTask {
+	task := RunnableTask{
 func parseFlowDefinitionFile(flowDefinitionFilePath string) *ParsedFlowDefinition {
 
 	taskLookup := make(map[string]*RunnableTask)
@@ -457,6 +459,8 @@ func parseFlowDefinitionFile(flowDefinitionFilePath string) *ParsedFlowDefinitio
 					*substituteWithContext(subTarget.(string), executionEnv))
 			}
 			task := RunnableTask{
+func createTaskFromRunnableKeyVals(runnableData map[string]interface{}, executionEnv map[string]string) *RunnableTask {
+	task := RunnableTask{
 				targetKey:  targetIdentifier,
 				targetName: substitutedTargetName,
 			}
@@ -467,10 +471,22 @@ func parseFlowDefinitionFile(flowDefinitionFilePath string) *ParsedFlowDefinitio
 
 			task := RunnableTask{
 				targetKey:       targetIdentifier,
+		taskDeclaration: &RunnableSchemaJson{},
+	}
 				taskDeclaration: &RunnableSchemaJson{},
 			}
+		taskDeclaration: &RunnableSchemaJson{},
+	}
 
 			task.targetName = *substituteWithContext(substitutedTargetName, executionEnv)
+	if isPath(task.targetName) {
+		fileAbsPath := getPathRelativeToCwd(task.targetName)
+		task.taskDeclaration.Out = &fileAbsPath
+	} else {
+		if outputPathValue, ok := runnableData["out"]; ok {
+			fileAbsPath := getPathRelativeToCwd(
+				*substituteWithContext(outputPathValue.(string), executionEnv))
+			task.taskDeclaration.Out = &fileAbsPath
 			if isPath(task.targetName) {
 				fileAbsPath := getPathRelativeToCwd(task.targetName)
 				task.taskDeclaration.Out = &fileAbsPath
@@ -479,10 +495,34 @@ func parseFlowDefinitionFile(flowDefinitionFilePath string) *ParsedFlowDefinitio
 					fileAbsPath := getPathRelativeToCwd(
 						*substituteWithContext(outputPathValue.(string), executionEnv))
 					task.taskDeclaration.Out = &fileAbsPath
+	if isPath(task.targetName) {
+		fileAbsPath := getPathRelativeToCwd(task.targetName)
+		task.taskDeclaration.Out = &fileAbsPath
+	} else {
+		if outputPathValue, ok := runnableData["out"]; ok {
+			fileAbsPath := getPathRelativeToCwd(
+				*substituteWithContext(outputPathValue.(string), executionEnv))
+			task.taskDeclaration.Out = &fileAbsPath
 					taskLookup[fileAbsPath] = &task
+		}
+	}
 				}
 			}
+		}
+	}
 
+	if inValue, ok := runnableData["in"]; ok {
+		task.inputs = make([]*RunnableTaskInput, 0)
+		if inArray, ok := inValue.([]interface{}); ok {
+			// array of input target names / files
+			var inputStrings []string
+			for _, inItem := range inArray {
+				inString := getPathRelativeToCwd(
+					*substituteWithContext(inItem.(string), executionEnv))
+				inputStrings = append(inputStrings, fmt.Sprintf("\"%s\"", inString))
+				task.inputs = append(task.inputs, &RunnableTaskInput{
+					path: inString,
+				})
 			if inValue, ok := runnableData["in"]; ok {
 				task.inputs = make([]*RunnableTaskInput, 0)
 				if inArray, ok := inValue.([]interface{}); ok {
@@ -495,8 +535,32 @@ func parseFlowDefinitionFile(flowDefinitionFilePath string) *ParsedFlowDefinitio
 						task.inputs = append(task.inputs, &RunnableTaskInput{
 							path: inString,
 						})
+	if inValue, ok := runnableData["in"]; ok {
+		task.inputs = make([]*RunnableTaskInput, 0)
+		if inArray, ok := inValue.([]interface{}); ok {
+			// array of input target names / files
+			var inputStrings []string
+			for _, inItem := range inArray {
+				inString := getPathRelativeToCwd(
+					*substituteWithContext(inItem.(string), executionEnv))
+				inputStrings = append(inputStrings, fmt.Sprintf("\"%s\"", inString))
+				task.inputs = append(task.inputs, &RunnableTaskInput{
+					path: inString,
+				})
 						taskDependencies[substitutedTargetName] = append(
 							taskDependencies[substitutedTargetName], inString)
+			}
+			concatenatedInputs := strings.Join(inputStrings, " ")
+			// FIXME: probably redundant since we're using task.inputs
+			task.taskDeclaration.In = &concatenatedInputs
+		} else {
+			// assume string
+			inString := getPathRelativeToCwd(
+				*substituteWithContext(inValue.(string), executionEnv))
+			task.taskDeclaration.In = &inString
+			task.inputs = append(task.inputs, &RunnableTaskInput{
+				path: inString,
+			})
 					}
 					concatenatedInputs := strings.Join(inputStrings, " ")
 					// FIXME: probably redundant since we're using task.inputs
@@ -509,28 +573,226 @@ func parseFlowDefinitionFile(flowDefinitionFilePath string) *ParsedFlowDefinitio
 					task.inputs = append(task.inputs, &RunnableTaskInput{
 						path: inString,
 					})
+			}
+			concatenatedInputs := strings.Join(inputStrings, " ")
+			// FIXME: probably redundant since we're using task.inputs
+			task.taskDeclaration.In = &concatenatedInputs
+		} else {
+			// assume string
+			inString := getPathRelativeToCwd(
+				*substituteWithContext(inValue.(string), executionEnv))
+			task.taskDeclaration.In = &inString
+			task.inputs = append(task.inputs, &RunnableTaskInput{
+				path: inString,
+			})
 					taskDependencies[substitutedTargetName] = append(
 						taskDependencies[substitutedTargetName], inString)
+		}
+	}
 				}
 			}
+		}
+	}
 
+	if inSha256Value, ok := runnableData["in.sha256"]; ok {
+		inSha256String := inSha256Value.(string)
+		task.taskDeclaration.InSha256 = &inSha256String
+	}
 			if inSha256Value, ok := runnableData["in.sha256"]; ok {
 				inSha256String := inSha256Value.(string)
 				task.taskDeclaration.InSha256 = &inSha256String
 			}
+	if inSha256Value, ok := runnableData["in.sha256"]; ok {
+		inSha256String := inSha256Value.(string)
+		task.taskDeclaration.InSha256 = &inSha256String
+	}
 
+	if outSha256Value, ok := runnableData["out.sha256"]; ok {
+		outSha256String := outSha256Value.(string)
+		task.taskDeclaration.OutSha256 = &outSha256String
+	}
 			if outSha256Value, ok := runnableData["out.sha256"]; ok {
 				outSha256String := outSha256Value.(string)
 				task.taskDeclaration.OutSha256 = &outSha256String
 			}
+	if outSha256Value, ok := runnableData["out.sha256"]; ok {
+		outSha256String := outSha256Value.(string)
+		task.taskDeclaration.OutSha256 = &outSha256String
+	}
 
+	if runnableValue, ok := runnableData["run"]; ok {
+		runString := runnableValue.(string)
+		task.taskDeclaration.Run = &runString
+	}
+	populateTaskModTimes(&task)
 			if runnableValue, ok := runnableData["run"]; ok {
 				runString := runnableValue.(string)
 				task.taskDeclaration.Run = &runString
 			}
 			populateTaskModTimes(&task)
+	if runnableValue, ok := runnableData["run"]; ok {
+		runString := runnableValue.(string)
+		task.taskDeclaration.Run = &runString
+	}
+	populateTaskModTimes(&task)
 
+	return &task
+}
+
+func parseFlowDefinitionFile(flowDefinitionFilePath string) *ParsedFlowDefinition {
+
+	taskLookup := make(map[string]*RunnableTask)
+	taskDependencies := make(map[string][]string)
+	executionEnv := getOsEnvironAsMap()
+
+	var flowDefinitionObject map[string]interface{}
+	flowDefinitionSource, err := os.ReadFile(flowDefinitionFilePath)
+	bailOnError(err)
+	if err := yaml.Unmarshal([]byte(flowDefinitionSource), &flowDefinitionObject); err != nil {
+		log.Fatalf("error: %v", err)
+	}
+
+	// first pass: compile the execution environment
+	for targetIdentifier, value := range flowDefinitionObject {
+
+		fmt.Fprintf(os.Stderr, "Processing key: %s, value: %v\n", targetIdentifier, value)
+
+		switch value.(type) {
+		case string: // variable definitions
+			executionEnv[targetIdentifier] = flowDefinitionObject[targetIdentifier].(string)
+		}
+	}
+
+	/*
+		fmt.Fprintf(os.Stderr, "╭─ Environment Variables ─╮\n")
+		for key, value := range executionEnv {
+			value = strings.ReplaceAll(value, "\n", "↵")
+			if len(value) > 80 {
+				value = value[:77] + "..."
+			}
+			fmt.Fprintf(os.Stderr, "│ %s=%s\n", color.HiYellowString(key), color.HiWhiteString(value))
+		}
+		fmt.Fprintf(os.Stderr, "╰────────────────────────╯\n\n")
+		// */
+
+	// second pass: retrieve tasks and substitute using executionEnv
+	for targetIdentifier, value := range flowDefinitionObject {
+
+		if executionEnv[targetIdentifier] != "" {
+			// skip variable definitions
+			continue
+		}
+		substitutedTargetName := *substituteWithContext(targetIdentifier, executionEnv)
+
+		// ensure the target is in the dependency tracker
+		if _, ok := taskDependencies[substitutedTargetName]; !ok {
+			taskDependencies[substitutedTargetName] = make([]string, 0)
+		}
+
+		switch ruleContent := value.(type) {
+
+		case string: // variable definitions
+			continue
+
+		case []interface{}: // compile subtargets
+			for _, subTarget := range ruleContent {
+				taskDependencies[substitutedTargetName] = append(
+					taskDependencies[substitutedTargetName],
+					*substituteWithContext(subTarget.(string), executionEnv))
+			}
+			task := RunnableTask{
+				targetKey:  targetIdentifier,
+				targetName: substitutedTargetName,
+			}
+	return &task
+}
+
+func parseFlowDefinitionFile(flowDefinitionFilePath string) *ParsedFlowDefinition {
+
+	taskLookup := make(map[string]*RunnableTask)
+	taskDependencies := make(map[string][]string)
+	executionEnv := getOsEnvironAsMap()
+
+	var flowDefinitionObject map[string]interface{}
+	flowDefinitionSource, err := os.ReadFile(flowDefinitionFilePath)
+	bailOnError(err)
+	if err := yaml.Unmarshal([]byte(flowDefinitionSource), &flowDefinitionObject); err != nil {
+		log.Fatalf("error: %v", err)
+	}
+
+	// first pass: compile the execution environment
+	for targetIdentifier, value := range flowDefinitionObject {
+
+		fmt.Fprintf(os.Stderr, "Processing key: %s, value: %v\n", targetIdentifier, value)
+
+		switch value.(type) {
+		case string: // variable definitions
+			executionEnv[targetIdentifier] = flowDefinitionObject[targetIdentifier].(string)
+		}
+	}
+
+	/*
+		fmt.Fprintf(os.Stderr, "╭─ Environment Variables ─╮\n")
+		for key, value := range executionEnv {
+			value = strings.ReplaceAll(value, "\n", "↵")
+			if len(value) > 80 {
+				value = value[:77] + "..."
+			}
+			fmt.Fprintf(os.Stderr, "│ %s=%s\n", color.HiYellowString(key), color.HiWhiteString(value))
+		}
+		fmt.Fprintf(os.Stderr, "╰────────────────────────╯\n\n")
+		// */
+
+	// second pass: retrieve tasks and substitute using executionEnv
+	for targetIdentifier, value := range flowDefinitionObject {
+
+		if executionEnv[targetIdentifier] != "" {
+			// skip variable definitions
+			continue
+		}
+		substitutedTargetName := *substituteWithContext(targetIdentifier, executionEnv)
+
+		// ensure the target is in the dependency tracker
+		if _, ok := taskDependencies[substitutedTargetName]; !ok {
+			taskDependencies[substitutedTargetName] = make([]string, 0)
+		}
+
+		switch ruleContent := value.(type) {
+
+		case string: // variable definitions
+			continue
+
+		case []interface{}: // compile subtargets
+			for _, subTarget := range ruleContent {
+				taskDependencies[substitutedTargetName] = append(
+					taskDependencies[substitutedTargetName],
+					*substituteWithContext(subTarget.(string), executionEnv))
+			}
+			task := RunnableTask{
+				targetKey:  targetIdentifier,
+				targetName: substitutedTargetName,
+			}
 			taskLookup[substitutedTargetName] = &task
+
+		default: // all other cases should be map
+			runnableData := ruleContent.(map[string]interface{})
+			task := createTaskFromRunnableKeyVals(runnableData, executionEnv)
+			task.targetKey = targetIdentifier
+			task.targetName = substitutedTargetName
+			taskLookup[substitutedTargetName] = task
+			if task.taskDeclaration.Out != nil {
+				taskLookup[*task.taskDeclaration.Out] = task
+			}
+
+		default: // all other cases should be map
+			runnableData := ruleContent.(map[string]interface{})
+			task := createTaskFromRunnableKeyVals(runnableData, executionEnv)
+			task.targetKey = targetIdentifier
+			task.targetName = substitutedTargetName
+			taskLookup[substitutedTargetName] = task
+			if task.taskDeclaration.Out != nil {
+				taskLookup[*task.taskDeclaration.Out] = task
+			}
 		}
 	}
 
