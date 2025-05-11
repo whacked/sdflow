@@ -66,8 +66,8 @@ func isPath(s string) bool {
 	return strings.HasPrefix(s, "./") || strings.HasPrefix(s, "/")
 }
 
-func isRemotePath(s string) bool {
-	return strings.HasPrefix(s, "http") || strings.HasPrefix(s, "s3://")
+func isRemotePath(path string) bool {
+	return strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://") || strings.HasPrefix(path, "s3://")
 }
 
 // yaml handling

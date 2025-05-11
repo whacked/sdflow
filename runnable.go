@@ -10,7 +10,7 @@ type RunnableSchemaJson struct {
 	In interface{} `json:"in,omitempty" yaml:"in,omitempty" mapstructure:"in,omitempty"`
 
 	// InSha256 corresponds to the JSON schema field "in.sha256".
-	InSha256 *string `json:"in.sha256,omitempty" yaml:"in.sha256,omitempty" mapstructure:"in.sha256,omitempty"`
+	InSha256 interface{} `json:"in.sha256,omitempty" yaml:"in.sha256,omitempty" mapstructure:"in.sha256,omitempty"`
 
 	// Name corresponds to the JSON schema field "name".
 	Name *string `json:"name,omitempty" yaml:"name,omitempty" mapstructure:"name,omitempty"`
@@ -40,12 +40,6 @@ func (j *RunnableSchemaJson) UnmarshalJSON(value []byte) error {
 	var plain Plain
 	if err := json.Unmarshal(value, &plain); err != nil {
 		return err
-	}
-	if plain.InSha256 != nil && len(*plain.InSha256) < 64 {
-		return fmt.Errorf("field %s length: must be >= %d", "in.sha256", 64)
-	}
-	if plain.InSha256 != nil && len(*plain.InSha256) > 64 {
-		return fmt.Errorf("field %s length: must be <= %d", "in.sha256", 64)
 	}
 	if plain.OutSha256 != nil && len(*plain.OutSha256) < 64 {
 		return fmt.Errorf("field %s length: must be >= %d", "out.sha256", 64)

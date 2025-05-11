@@ -44,8 +44,8 @@ var zshAutoCompleteScript embed.FS
 const zshAutoCompleteScriptPath = "resources/zsh_autocomplete.sh"
 
 type RunnableTaskInput struct {
-	// sha256 string
 	path   string
+	sha256 string
 	mtime  int64
 	alias  string // New field for named inputs
 }
@@ -105,7 +105,7 @@ func prettyPrintTask(task *RunnableTask) {
 		fmt.Println("  Run:", *task.taskDeclaration.Run)
 	}
 	if task.taskDeclaration.InSha256 != nil {
-		fmt.Println("  In SHA256:", *task.taskDeclaration.InSha256)
+		fmt.Println("  In SHA256:", task.taskDeclaration.InSha256)
 	}
 	if task.taskDeclaration.OutSha256 != nil {
 		fmt.Println("  Out SHA256:", *task.taskDeclaration.OutSha256)
@@ -192,7 +192,6 @@ func renderCommand(task *RunnableTask) string {
 	fmt.Printf("decl: %+v\n", task.taskDeclaration)
 
 	mapper := func(varName string) string {
-		fmt.Printf("HANDLING varName: %s\n", varName)
 
 		// Handle $out
 		if varName == "out" && task.taskDeclaration.Out != nil {
@@ -240,21 +239,57 @@ func renderCommand(task *RunnableTask) string {
 	return renderedCommand
 }
 
-func getTaskInputCachePath(task *RunnableTask) string {
-	if task.taskDeclaration.InSha256 != nil && len(task.inputs) == 1 {
-		return filepath.Join(CACHE_DIRECTORY, *task.taskDeclaration.InSha256)
+func getTaskInputCachePath(task *RunnableTask, inputPath string) (string, bool) {
+	if task.taskDeclaration.InSha256 == nil {
+		return "", false
 	}
-	return ""
+
+	switch sha256Value := task.taskDeclaration.InSha256.(type) {
+	case string:
+		// For single input with string SHA256
+		if len(task.inputs) != 1 {
+			return "", false
+		}
+		return filepath.Join(CACHE_DIRECTORY, sha256Value), true
+
+	case map[string]interface{}:
+		// For map SHA256, find the matching SHA256 for this input path
+		var sha256 string
+		var ok bool
+
+		// Try to match by alias first
+		for _, input := range task.inputs {
+			if input.path == inputPath && input.alias != "" {
+				sha256, ok = sha256Value[input.alias].(string)
+				if ok {
+					break
+				}
+			}
+		}
+
+		// If no alias match, try direct path
+		if !ok {
+			sha256, ok = sha256Value[inputPath].(string)
+		}
+
+		if !ok {
+			return "", false
+		}
+
+		return filepath.Join(CACHE_DIRECTORY, sha256), true
+
+	default:
+		return "", false
+	}
 }
 
-func isTaskInputInCache(task *RunnableTask) bool {
-	if task.taskDeclaration.InSha256 != nil && len(task.inputs) == 1 {
-		cachePath := getTaskInputCachePath(task)
-		if _, err := os.Stat(cachePath); err == nil {
-			return true
-		}
+func isTaskInputInCache(task *RunnableTask, inputPath string) bool {
+	cachePath, ok := getTaskInputCachePath(task, inputPath)
+	if !ok {
+		return false
 	}
-	return false
+	_, err := os.Stat(cachePath)
+	return err == nil
 }
 
 func saveTaskInputToCache(task *RunnableTask) string {
@@ -262,21 +297,113 @@ func saveTaskInputToCache(task *RunnableTask) string {
 		os.Mkdir(CACHE_DIRECTORY, 0755)
 	}
 
-	if len(task.inputs) != 1 {
-		panic("saveTaskInputToCache: len(task.inputs) != 1")
+	if len(task.inputs) == 0 {
+		return ""
 	}
 
-	remoteBytes := getRemoteResourceBytes(task.inputs[0].path)
-	fmt.Println("Downloaded content length:", len(remoteBytes))
-	if isBytesMatchingSha256(remoteBytes, *task.taskDeclaration.InSha256) {
-		fmt.Println("SHA256 matches!")
-	} else {
-		fmt.Println("SHA256 mismatch!")
+	switch sha256Value := task.taskDeclaration.InSha256.(type) {
+	case string:
+		// For single input with string SHA256
+		if len(task.inputs) != 1 {
+			return ""
+		}
+		remoteBytes := getRemoteResourceBytes(task.inputs[0].path)
+		fmt.Println("Downloaded content length:", len(remoteBytes))
+		if isBytesMatchingSha256(remoteBytes, sha256Value) {
+			fmt.Printf("SHA256 matches for %s\n", task.inputs[0].path)
+		} else {
+			fmt.Printf("SHA256 mismatch for %s\n", task.inputs[0].path)
+			return ""
+		}
+		cachePath := filepath.Join(CACHE_DIRECTORY, sha256Value)
+		err := os.WriteFile(cachePath, remoteBytes, 0644)
+		bailOnError(err)
+		return cachePath
+
+	case map[string]interface{}:
+		// For multiple inputs with map SHA256
+		var lastCachePath string
+		for _, input := range task.inputs {
+			// Try to match by alias first
+			var sha256 string
+			var ok bool
+			if input.alias != "" {
+				sha256, ok = sha256Value[input.alias].(string)
+			}
+			if !ok {
+				// Try to match by path
+				sha256, ok = sha256Value[input.path].(string)
+			}
+			if !ok {
+				continue // Skip this input if no matching SHA256 found
+			}
+
+			remoteBytes := getRemoteResourceBytes(input.path)
+			fmt.Printf("Downloaded content length for %s: %d\n", input.path, len(remoteBytes))
+			if isBytesMatchingSha256(remoteBytes, sha256) {
+				fmt.Printf("SHA256 matches for %s!\n", input.path)
+			} else {
+				fmt.Printf("SHA256 mismatch for %s!\n", input.path)
+				continue
+			}
+
+			cachePath := filepath.Join(CACHE_DIRECTORY, sha256)
+			err := os.WriteFile(cachePath, remoteBytes, 0644)
+			bailOnError(err)
+			lastCachePath = cachePath
+		}
+		return lastCachePath
+
+	default:
+		return ""
 	}
-	cachePath := getTaskInputCachePath(task)
-	err := os.WriteFile(cachePath, remoteBytes, 0644)
-	bailOnError(err)
-	return cachePath
+}
+
+func handleRemoteInput(task *RunnableTask, input *RunnableTaskInput) bool {
+	if !isRemotePath(input.path) {
+		return false
+	}
+
+	if task.taskDeclaration.InSha256 == nil {
+		return false
+	}
+
+	// Convert string SHA256 to a single-entry map for consistent handling
+	var sha256Map map[string]interface{}
+	switch sha256Value := task.taskDeclaration.InSha256.(type) {
+	case string:
+		// For string SHA256, create a single-entry map with the input path as key
+		sha256Map = map[string]interface{}{
+			input.path: sha256Value,
+		}
+	case map[string]interface{}:
+		sha256Map = sha256Value
+	default:
+		return false
+	}
+
+	// Try to match by alias first
+	var ok bool
+	if input.alias != "" {
+		_, ok = sha256Map[input.alias].(string)
+	}
+	if !ok {
+		// Try to match by path
+		_, ok = sha256Map[input.path].(string)
+	}
+	if !ok {
+		return false
+	}
+
+	if isTaskInputInCache(task, input.path) {
+		cachedInputPath, _ := getTaskInputCachePath(task, input.path)
+		trace(fmt.Sprintf("Using cached input %s", cachedInputPath))
+		return true
+	} else {
+		cachedInputPath := saveTaskInputToCache(task)
+		trace(fmt.Sprintf("saved input to cache %s", cachedInputPath))
+		return true
+	}
 }
 
 func runTask(task *RunnableTask, env map[string]string, shouldUpdateOutSha256 bool) {
@@ -300,25 +427,20 @@ func runTask(task *RunnableTask, env map[string]string, shouldUpdateOutSha256 bo
 	}
 
 	var shouldCheckOutput bool = false
-	if task.taskDeclaration.In != nil && len(task.inputs) == 1 {
+	if task.taskDeclaration.In != nil && len(task.inputs) > 0 {
 		if task.taskDeclaration.InSha256 != nil {
-			fmt.Println("Checking sha256 of input file")
+			trace("Checking sha256 of input file")
 
-			if isRemotePath(task.inputs[0].path) {
-				if isTaskInputInCache(task) {
-					cachedInputPath := getTaskInputCachePath(task)
-					trace(fmt.Sprintf("Using cached input %s", cachedInputPath))
-					return
-				} else {
-					cachedInputPath := saveTaskInputToCache(task)
-					trace(fmt.Sprintf("saved input to cache %s", cachedInputPath))
-					return
+			// Handle each input individually
+			for _, input := range task.inputs {
+				if handleRemoteInput(task, input) {
+					continue
 				}
-			} else {
-				if isFileBytesMatchingSha256(task.inputs[0].path, *task.taskDeclaration.InSha256) {
-					trace("IN SHA256 matches!")
+				// Handle local file SHA256 verification
+				if input.sha256 != "" && isFileBytesMatchingSha256(input.path, input.sha256) {
+					trace(fmt.Sprintf("IN SHA256 matches for %s", input.path))
 				} else {
-					trace("IN SHA256 mismatch!")
+					trace(fmt.Sprintf("IN SHA256 mismatch for %s", input.path))
 				}
 			}
 		} else if task.taskDeclaration.Out != nil && task.taskDeclaration.Run == nil {
@@ -479,10 +601,28 @@ func createTaskFromRunnableKeyVals(runnableData map[string]interface{}, executio
 			})
 		}
 	}
-
 	if inSha256Value, ok := runnableData["in.sha256"]; ok {
-		inSha256String := inSha256Value.(string)
-		task.taskDeclaration.InSha256 = &inSha256String
+		task.taskDeclaration.InSha256 = inSha256Value
+
+		// Handle map case for per-input SHA256s to populate the input.sha256 field
+		if sha256Map, ok := inSha256Value.(map[string]interface{}); ok {
+			for _, input := range task.inputs {
+				// Try to match by alias first if it exists
+				if input.alias != "" {
+					if sha256, ok := sha256Map[input.alias].(string); ok {
+						input.sha256 = sha256
+						continue
+					}
+				}
+				// Try to match by path
+				if sha256, ok := sha256Map[input.path].(string); ok {
+					input.sha256 = sha256
+				}
+			}
+		} else if sha256String, ok := inSha256Value.(string); ok && len(task.inputs) == 1 {
+			// Handle single string case - apply to single input
+			task.inputs[0].sha256 = sha256String
+		}
 	}
 
 	if outSha256Value, ok := runnableData["out.sha256"]; ok {
@@ -522,7 +662,7 @@ func parseFlowDefinitionSource(flowDefinitionSource string) *ParsedFlowDefinitio
 	// first pass: compile the execution environment
 	for targetIdentifier, value := range flowDefinitionObject {
 
-		fmt.Fprintf(os.Stderr, "Processing key: %s, value: %v\n", targetIdentifier, value)
+		trace(fmt.Sprintf("Processing key: %s, value: %v", targetIdentifier, value))
 
 		switch value.(type) {
 		case string: // variable definitions
@@ -781,12 +921,16 @@ func main() {
 			}
 
 			shouldUpdateOutSha256, _ := cmd.Flags().GetBool("updatehash")
+			// TODO FIXME: tell user that updating the hash is meaningless if `out` is not supplied
 
 			runFlowDefinitionProcessor(FLOW_DEFINITION_FILE, shouldUpdateOutSha256)
 			return nil
 		},
 	}
 
+	// TODO: add -B (force rerun)
+	// TODO: should support last run timestamp writing to sdflow? -- probably not, use git
+	// TODO: should support write to s3 target? what about dynamic name?
 	rootCmd.Flags().Bool("validate", false, "validate the flow definition file")
 	rootCmd.Flags().String("completions", "", "get shell completion code for the given shell type")
 	rootCmd.Flags().Bool("updatehash", false, "update out.sha256 for the target in the flow definition file after running the target")
