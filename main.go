@@ -641,81 +641,20 @@ func createTaskFromRunnableKeyVals(runnableData map[string]interface{}, executio
 
 func parseFlowDefinitionFile(flowDefinitionFilePath string) *ParsedFlowDefinition {
 
-	taskLookup := make(map[string]*RunnableTask)
-	taskDependencies := make(map[string][]string)
-	executionEnv := getOsEnvironAsMap()
-
-	var flowDefinitionObject map[string]interface{}
 	flowDefinitionSource, err := os.ReadFile(flowDefinitionFilePath)
 	bailOnError(err)
-	if err := yaml.Unmarshal([]byte(flowDefinitionSource), &flowDefinitionObject); err != nil {
-		log.Fatalf("error: %v", err)
-	}
 
-	// first pass: compile the execution environment
-	for targetIdentifier, value := range flowDefinitionObject {
-
-		fmt.Fprintf(os.Stderr, "Processing key: %s, value: %v\n", targetIdentifier, value)
-
-		switch value.(type) {
-		case string: // variable definitions
-			executionEnv[targetIdentifier] = flowDefinitionObject[targetIdentifier].(string)
-		}
-	}
-
-	/*
-		fmt.Fprintf(os.Stderr, "╭─ Environment Variables ─╮\n")
-		for key, value := range executionEnv {
-			value = strings.ReplaceAll(value, "\n", "↵")
-			if len(value) > 80 {
-				value = value[:77] + "..."
-			}
-			fmt.Fprintf(os.Stderr, "│ %s=%s\n", color.HiYellowString(key), color.HiWhiteString(value))
-		}
-		fmt.Fprintf(os.Stderr, "╰────────────────────────╯\n\n")
-		// */
-
-	// second pass: retrieve tasks and substitute using executionEnv
-	for targetIdentifier, value := range flowDefinitionObject {
-
-		if executionEnv[targetIdentifier] != "" {
-			// skip variable definitions
-			continue
-		}
-		substitutedTargetName := *substituteWithContext(targetIdentifier, executionEnv)
-
-		// ensure the target is in the dependency tracker
-		if _, ok := taskDependencies[substitutedTargetName]; !ok {
-			taskDependencies[substitutedTargetName] = make([]string, 0)
-		}
-
-		switch ruleContent := value.(type) {
-
-		case string: // variable definitions
-			continue
-
-		case []interface{}: // compile subtargets
-			for _, subTarget := range ruleContent {
-				taskDependencies[substitutedTargetName] = append(
-					taskDependencies[substitutedTargetName],
-					*substituteWithContext(subTarget.(string), executionEnv))
-			}
-			task := RunnableTask{
-				targetKey:  targetIdentifier,
-				targetName: substitutedTargetName,
-			}
-	return &task
+	return parseFlowDefinitionSource(string(flowDefinitionSource))
 }
 
-func parseFlowDefinitionFile(flowDefinitionFilePath string) *ParsedFlowDefinition {
+func parseFlowDefinitionSource(flowDefinitionSource string) *ParsedFlowDefinition {
 
 	taskLookup := make(map[string]*RunnableTask)
 	taskDependencies := make(map[string][]string)
 	executionEnv := getOsEnvironAsMap()
 
 	var flowDefinitionObject map[string]interface{}
-	flowDefinitionSource, err := os.ReadFile(flowDefinitionFilePath)
-	bailOnError(err)
+
 	if err := yaml.Unmarshal([]byte(flowDefinitionSource), &flowDefinitionObject); err != nil {
 		log.Fatalf("error: %v", err)
 	}

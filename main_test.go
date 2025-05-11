@@ -124,6 +124,27 @@ hello:
 }
 
 func TestParseFlowDefinitionFileImplicitOutputPath(t *testing.T) {
+	yaml := `
+SCHEMAS_DIR: ./schemas
+./implied-file.dat:
+  in: ${SCHEMAS_DIR}/foo.txt
+  run: cat $in > $out
+`
+	pfd := parseFlowDefinitionSource(yaml)
+
+	task, ok := pfd.taskLookup["./implied-file.dat"]
+	if !ok {
+		t.Fatalf("task './implied-file.dat' not in lookup")
+	}
+	if len(task.inputs) != 1 || !strings.HasSuffix(task.inputs[0].path, "schemas/foo.txt") {
+		t.Fatalf("input not parsed/substituted correctly: %+v", task.inputs)
+	}
+	if task.taskDeclaration == nil || task.taskDeclaration.Out == nil ||
+		*task.taskDeclaration.Out != "./implied-file.dat" {
+		t.Fatalf("out path wrong: %+v", task.taskDeclaration)
+	}
+}
+
 	tmp := t.TempDir()
 
 	yaml := `
