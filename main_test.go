@@ -122,3 +122,32 @@ hello:
 		t.Fatalf("out path wrong: %+v", task.taskDeclaration)
 	}
 }
+
+func TestParseFlowDefinitionFileImplicitOutputPath(t *testing.T) {
+	tmp := t.TempDir()
+
+	yaml := `
+SCHEMAS_DIR: ./schemas
+./implied-file.dat:
+  in: ${SCHEMAS_DIR}/foo.txt
+  run: cat $in > $out
+`
+	flowPath := filepath.Join(tmp, "Sdflow.yaml")
+	if err := os.WriteFile(flowPath, []byte(yaml), 0644); err != nil {
+		t.Fatalf("write flow file: %v", err)
+	}
+
+	pfd := parseFlowDefinitionFile(flowPath)
+
+	task, ok := pfd.taskLookup["./implied-file.dat"]
+	if !ok {
+		t.Fatalf("task './implied-file.dat' not in lookup")
+	}
+	if len(task.inputs) != 1 || !strings.HasSuffix(task.inputs[0].path, "schemas/foo.txt") {
+		t.Fatalf("input not parsed/substituted correctly: %+v", task.inputs)
+	}
+	if task.taskDeclaration == nil || task.taskDeclaration.Out == nil ||
+		*task.taskDeclaration.Out != "./implied-file.dat" {
+		t.Fatalf("out path wrong: %+v", task.taskDeclaration)
+	}
+}

@@ -799,6 +799,10 @@ func parseFlowDefinitionFile(flowDefinitionFilePath string) *ParsedFlowDefinitio
 	// populate the dependencies
 	for targetIdentifier := range taskDependencies {
 		task := taskLookup[targetIdentifier]
+		if task.taskDeclaration != nil && task.taskDeclaration.Out == nil {
+			task.taskDeclaration.Out = &targetIdentifier
+		}
+
 		topSortedDependencies := topSortDependencies(taskDependencies, targetIdentifier)
 		for _, dep := range topSortedDependencies[:len(topSortedDependencies)-1] {
 			depTask := taskLookup[dep]
