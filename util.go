@@ -74,7 +74,7 @@ func topSortDependencies(taskDependencies map[string][]string, targetTask string
 }
 
 func isPath(s string) bool {
-	return strings.HasPrefix(s, "./") || strings.HasPrefix(s, "/")
+	return strings.HasPrefix(s, "./") || strings.HasPrefix(s, "../") || strings.HasPrefix(s, "/")
 }
 
 func isRemotePath(path string) bool {

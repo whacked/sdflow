@@ -71,20 +71,38 @@ func TestRenderCommand(t *testing.T) {
 			wantCommand: "cp src.txt dst.txt",
 		},
 		{
+			name: "relative output path",
+			runnable: map[string]interface{}{
+				"run": "touch $out",
+				"out": "relative/dst.txt",
+			},
+			env:         map[string]string{},
+			wantCommand: "touch relative/dst.txt",
+		},
+		{
+			name: "absolute output path",
+			runnable: map[string]interface{}{
+				"run": "touch $out",
+				"out": "/absolute/path/dst.txt",
+			},
+			env:         map[string]string{},
+			wantCommand: "touch /absolute/path/dst.txt",
+		},
+		{
 			name: "multiple input files",
 			runnable: map[string]interface{}{
 				"run": "cp ${in[0]} $out",
-				"out": "dst.txt",
+				"out": "./bar/dst.txt",
 				"in":  stringSliceToInterface([]string{"src1.txt", "source two.text", "source-3.another.file"}),
 			},
 			env:         map[string]string{},
-			wantCommand: "cp src1.txt dst.txt",
+			wantCommand: "cp src1.txt ./bar/dst.txt",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			task := createTaskFromRunnableKeyVals(tt.runnable, tt.env)
+			task := createTaskFromRunnableKeyVals("FakeTarget", "fakeRenderedTarget", tt.runnable, tt.env)
 			got := renderCommand(task)
 			if got != tt.wantCommand {
 				t.Errorf("renderCommand() = %q, want %q", got, tt.wantCommand)

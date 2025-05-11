@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"embed"
 
@@ -188,8 +189,6 @@ func substituteWithContext(s string, context map[string]string) *string {
 }
 
 func renderCommand(task *RunnableTask) string {
-	fmt.Printf("task: %+v\n", task)
-	fmt.Printf("decl: %+v\n", task.taskDeclaration)
 
 	mapper := func(varName string) string {
 
@@ -522,14 +521,18 @@ func populateTaskModTimes(task *RunnableTask) {
 	if task.taskDeclaration == nil {
 		return
 	}
+
 	if task.taskDeclaration.In != nil {
 		for _, taskInput := range task.inputs {
 			stat, err := os.Stat(taskInput.path)
 			if err == nil {
 				taskInput.mtime = stat.ModTime().Unix()
+			} else {
+				taskInput.mtime = time.Now().Unix()
 			}
 		}
 	}
+
 	if task.taskDeclaration.Out != nil {
 		stat, err := os.Stat(*task.taskDeclaration.Out)
 		if err == nil {
@@ -544,8 +547,15 @@ type ParsedFlowDefinition struct {
 	executionEnv     map[string]string
 }
 
-func createTaskFromRunnableKeyVals(runnableData map[string]interface{}, executionEnv map[string]string) *RunnableTask {
+func createTaskFromRunnableKeyVals(
+	targetIdentifier string,
+	substitutedTargetName string,
+	runnableData map[string]interface{},
+	executionEnv map[string]string,
+) *RunnableTask {
 	task := RunnableTask{
+		targetKey:       targetIdentifier,
+		targetName:      substitutedTargetName,
 		taskDeclaration: &RunnableSchemaJson{},
 	}
 
@@ -554,9 +564,14 @@ func createTaskFromRunnableKeyVals(runnableData map[string]interface{}, executio
 		task.taskDeclaration.Out = &fileAbsPath
 	} else {
 		if outputPathValue, ok := runnableData["out"]; ok {
-			fileAbsPath := getPathRelativeToCwd(
-				*substituteWithContext(outputPathValue.(string), executionEnv))
-			task.taskDeclaration.Out = &fileAbsPath
+			pathString := outputPathValue.(string)
+			if isPath(pathString) {
+				task.taskDeclaration.Out = &pathString
+			} else {
+				fileAbsPath := getPathRelativeToCwd(
+					*substituteWithContext(pathString, executionEnv))
+				task.taskDeclaration.Out = &fileAbsPath
+			}
 		}
 	}
 
@@ -715,9 +730,7 @@ func parseFlowDefinitionSource(flowDefinitionSource string) *ParsedFlowDefinitio
 
 		default: // all other cases should be map
 			runnableData := ruleContent.(map[string]interface{})
-			task := createTaskFromRunnableKeyVals(runnableData, executionEnv)
-			task.targetKey = targetIdentifier
-			task.targetName = substitutedTargetName
+			task := createTaskFromRunnableKeyVals(targetIdentifier, substitutedTargetName, runnableData, executionEnv)
 			taskLookup[substitutedTargetName] = task
 			if task.taskDeclaration.Out != nil {
 				taskLookup[*task.taskDeclaration.Out] = task
@@ -728,9 +741,6 @@ func parseFlowDefinitionSource(flowDefinitionSource string) *ParsedFlowDefinitio
 	// populate the dependencies
 	for targetIdentifier := range taskDependencies {
 		task := taskLookup[targetIdentifier]
-		if task.taskDeclaration != nil && task.taskDeclaration.Out == nil {
-			task.taskDeclaration.Out = &targetIdentifier
-		}
 
 		topSortedDependencies := topSortDependencies(taskDependencies, targetIdentifier)
 		for _, dep := range topSortedDependencies[:len(topSortedDependencies)-1] {
