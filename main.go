@@ -521,34 +521,35 @@ func createTaskFromRunnableKeyVals(runnableData map[string]interface{}, executio
 					*substituteWithContext(inItem.(string), executionEnv))
 				inputStrings = append(inputStrings, fmt.Sprintf("\"%s\"", inString))
 				task.inputs = append(task.inputs, &RunnableTaskInput{
-					path: inString,
+					path:  inString,
+					alias: inString,
 				})
-			if inValue, ok := runnableData["in"]; ok {
-				task.inputs = make([]*RunnableTaskInput, 0)
-				if inArray, ok := inValue.([]interface{}); ok {
-					// array of input target names / files
-					var inputStrings []string
-					for _, inItem := range inArray {
-						inString := getPathRelativeToCwd(
-							*substituteWithContext(inItem.(string), executionEnv))
-						inputStrings = append(inputStrings, fmt.Sprintf("\"%s\"", inString))
-						task.inputs = append(task.inputs, &RunnableTaskInput{
-							path: inString,
-						})
-	if inValue, ok := runnableData["in"]; ok {
-		task.inputs = make([]*RunnableTaskInput, 0)
-		if inArray, ok := inValue.([]interface{}); ok {
-			// array of input target names / files
-			var inputStrings []string
-			for _, inItem := range inArray {
-				inString := getPathRelativeToCwd(
-					*substituteWithContext(inItem.(string), executionEnv))
-				inputStrings = append(inputStrings, fmt.Sprintf("\"%s\"", inString))
-				task.inputs = append(task.inputs, &RunnableTaskInput{
-					path: inString,
-				})
-						taskDependencies[substitutedTargetName] = append(
-							taskDependencies[substitutedTargetName], inString)
+			}
+			concatenatedInputs := strings.Join(inputStrings, " ")
+			// FIXME: probably redundant since we're using task.inputs
+			task.taskDeclaration.In = &concatenatedInputs
+		} else {
+			// assume string
+			inString := getPathRelativeToCwd(
+				*substituteWithContext(inValue.(string), executionEnv))
+			task.taskDeclaration.In = &inString
+			task.inputs = append(task.inputs, &RunnableTaskInput{
+				path:  inString,
+				alias: inString,
+			})
+					}
+					}
+					concatenatedInputs := strings.Join(inputStrings, " ")
+					// FIXME: probably redundant since we're using task.inputs
+					task.taskDeclaration.In = &concatenatedInputs
+				} else {
+					// assume string
+					inString := getPathRelativeToCwd(
+						*substituteWithContext(inValue.(string), executionEnv))
+					task.taskDeclaration.In = &inString
+					task.inputs = append(task.inputs, &RunnableTaskInput{
+						path: inString,
+					})
 			}
 			concatenatedInputs := strings.Join(inputStrings, " ")
 			// FIXME: probably redundant since we're using task.inputs
@@ -561,7 +562,14 @@ func createTaskFromRunnableKeyVals(runnableData map[string]interface{}, executio
 			task.inputs = append(task.inputs, &RunnableTaskInput{
 				path: inString,
 			})
-					}
+					taskDependencies[substitutedTargetName] = append(
+						taskDependencies[substitutedTargetName], inString)
+		}
+	}
+				}
+			}
+		}
+		}
 					concatenatedInputs := strings.Join(inputStrings, " ")
 					// FIXME: probably redundant since we're using task.inputs
 					task.taskDeclaration.In = &concatenatedInputs

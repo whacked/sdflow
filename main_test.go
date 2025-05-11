@@ -145,30 +145,40 @@ SCHEMAS_DIR: ./schemas
 	}
 }
 
-	tmp := t.TempDir()
-
+func TestParseFlowDefinitionFileInputArraySyntax(t *testing.T) {
 	yaml := `
 SCHEMAS_DIR: ./schemas
-./implied-file.dat:
-  in: ${SCHEMAS_DIR}/foo.txt
-  run: cat $in > $out
+myTarget:
+  in:
+  - foo.txt
+  - second.txt
+  - last.3
+  run: echo between ${in[0]} and ${in[2]} we have === $in === ${in}
 `
-	flowPath := filepath.Join(tmp, "Sdflow.yaml")
-	if err := os.WriteFile(flowPath, []byte(yaml), 0644); err != nil {
-		t.Fatalf("write flow file: %v", err)
+	pfd := parseFlowDefinitionSource(yaml)
+
+	task, _ := pfd.taskLookup["myTarget"]
+	if len(task.inputs) != 3 {
+		t.Fatalf("expected 3 inputs, got %d", len(task.inputs))
 	}
 
-	pfd := parseFlowDefinitionFile(flowPath)
+	expectedInputs := []string{"foo.txt", "second.txt", "last.3"}
+	for i, input := range task.inputs {
+		if input.path != expectedInputs[i] {
+			t.Fatalf("input %d: expected %s, got %s", i, expectedInputs[i], input.path)
+		}
+	}
 
-	task, ok := pfd.taskLookup["./implied-file.dat"]
-	if !ok {
-		t.Fatalf("task './implied-file.dat' not in lookup")
+	if task.inputs[0].alias != "foo.txt" {
+		t.Fatalf("input 0 alias wrong: %s", task.inputs[0].alias)
 	}
-	if len(task.inputs) != 1 || !strings.HasSuffix(task.inputs[0].path, "schemas/foo.txt") {
-		t.Fatalf("input not parsed/substituted correctly: %+v", task.inputs)
+	if task.inputs[1].alias != "second.txt" {
+		t.Fatalf("input 1 alias wrong: %s", task.inputs[1].alias)
 	}
-	if task.taskDeclaration == nil || task.taskDeclaration.Out == nil ||
-		*task.taskDeclaration.Out != "./implied-file.dat" {
-		t.Fatalf("out path wrong: %+v", task.taskDeclaration)
+
+	renderedCommand := renderCommand(task)
+	expectedCommand := "echo between foo.txt and last.3 we have === foo.txt second.txt last.3 === foo.txt second.txt last.3"
+	if renderedCommand != expectedCommand {
+		t.Fatalf("rendered command incorrect\nexpected: %s\ngot: %s", expectedCommand, renderedCommand)
 	}
 }
