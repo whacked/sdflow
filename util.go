@@ -23,6 +23,15 @@ import (
 	"github.com/stevenle/topsort"
 )
 
+var debugLevel int
+
+func init() {
+	debugLevelStr := os.Getenv("DEBUG_LEVEL")
+	if debugLevelStr != "" {
+		fmt.Sscanf(debugLevelStr, "%d", &debugLevel)
+	}
+}
+
 func bailOnError(err error) {
 	if err != nil {
 		log.Fatalf("error: %v", err)
@@ -30,7 +39,9 @@ func bailOnError(err error) {
 }
 
 func trace(msg string) {
-	fmt.Fprintf(os.Stderr, "[TRACE] %s\n", msg)
+	if debugLevel > 0 {
+		fmt.Fprintf(os.Stderr, "[TRACE] %s\n", msg)
+	}
 }
 
 func topSortDependencies(taskDependencies map[string][]string, targetTask string) []string {
