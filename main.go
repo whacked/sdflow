@@ -406,19 +406,20 @@ func handleRemoteInput(task *RunnableTask, input *RunnableTaskInput) bool {
 	}
 }
 
-func runTask(task *RunnableTask, env map[string]string, shouldUpdateOutSha256 bool) {
+func runTask(task *RunnableTask, env map[string]string, shouldUpdateOutSha256 bool, shouldForceRun bool) {
 	fmt.Fprintf(
 		os.Stderr,
 		"Running task: %+v (%d dependencies)\n", task.targetName, len(task.taskDependencies))
 	printVitalsForTask((task))
-	if checkIfOutputMoreRecentThanInputs(task) {
+
+	if !shouldForceRun && checkIfOutputMoreRecentThanInputs(task) {
 		fmt.Println("Output is up to date")
 		return
 	}
 
 	for _, dep := range task.taskDependencies {
 		fmt.Println("Running dependency:", dep.targetName)
-		runTask(dep, env, shouldUpdateOutSha256)
+		runTask(dep, env, shouldUpdateOutSha256, shouldForceRun)
 	}
 
 	if task.taskDeclaration == nil {
@@ -763,7 +764,7 @@ func parseFlowDefinitionSource(flowDefinitionSource string) *ParsedFlowDefinitio
 	return &parsedFlowDefinition
 }
 
-func runFlowDefinitionProcessor(flowDefinitionFilePath string, shouldWriteOutSha256 bool) {
+func runFlowDefinitionProcessor(flowDefinitionFilePath string, shouldWriteOutSha256 bool, shouldForceRun bool) {
 
 	parsedFlowDefinition := parseFlowDefinitionFile(flowDefinitionFilePath)
 
@@ -795,7 +796,7 @@ func runFlowDefinitionProcessor(flowDefinitionFilePath string, shouldWriteOutSha
 			return
 		} else {
 			task := parsedFlowDefinition.taskLookup[lastArg]
-			runTask(task, parsedFlowDefinition.executionEnv, shouldWriteOutSha256)
+			runTask(task, parsedFlowDefinition.executionEnv, shouldWriteOutSha256, shouldForceRun)
 
 			if shouldWriteOutSha256 && task.taskDeclaration.OutSha256 != nil {
 				updatedYamlString := updateOutSha256ForTarget(FLOW_DEFINITION_FILE, task.targetKey, *task.taskDeclaration.OutSha256)
@@ -947,20 +948,21 @@ func main() {
 			}
 
 			shouldUpdateOutSha256, _ := cmd.Flags().GetBool("updatehash")
+			shouldForceRun, _ := cmd.Flags().GetBool("always-run")
 			// TODO FIXME: tell user that updating the hash is meaningless if `out` is not supplied
 
-			runFlowDefinitionProcessor(FLOW_DEFINITION_FILE, shouldUpdateOutSha256)
+			runFlowDefinitionProcessor(FLOW_DEFINITION_FILE, shouldUpdateOutSha256, shouldForceRun)
 			return nil
 		},
 	}
 
-	// TODO: add -B (force rerun)
 	// TODO: should support last run timestamp writing to sdflow? -- probably not, use git
 	// TODO: should support write to s3 target? what about dynamic name?
 	rootCmd.Flags().Bool("validate", false, "validate the flow definition file")
 	rootCmd.Flags().String("completions", "", "get shell completion code for the given shell type")
 	rootCmd.Flags().Bool("updatehash", false, "update out.sha256 for the target in the flow definition file after running the target")
 	rootCmd.Flags().Bool("targets", false, "list all defined targets")
+	rootCmd.Flags().BoolP("always-run", "B", false, "always run the target, even if it's up to date")
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
