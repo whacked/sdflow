@@ -42,9 +42,9 @@ build:
 
 ./runnable.go:
   in:
-    - ${SCHEMAS_DIR}/runnable.schema.json
-    - main
-  run: go-jsonschema -p ${in[1]} ${in[0]} | tee $out
+    schema: ${SCHEMAS_DIR}/runnable.schema.json
+    packageName: main
+  run: go-jsonschema -p ${in.packageName} ${in.schema} | tee $out
 
 example-web-loader:
   in: https://json-schema.org/draft-04/hyper-schema
