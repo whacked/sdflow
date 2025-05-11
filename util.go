@@ -338,3 +338,14 @@ func updateOrAddKey(node *yaml.Node, key, newValue string) {
 		})
 	}
 }
+
+func getOsEnvironAsMap() map[string]string {
+	environ := make(map[string]string)
+
+	// add keyvals from environ to executionEnv
+	for _, envVar := range os.Environ() {
+		parts := strings.SplitN(envVar, "=", 2)
+		environ[parts[0]] = parts[1]
+	}
+	return environ
+}

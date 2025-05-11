@@ -17,10 +17,26 @@ let
   goEnv = mkGoEnv { pwd = ./.; };
   go-jsonschema = pkgs.stdenv.mkDerivation {
     name = "go-jsonschema";
-    src = pkgs.fetchurl {
-      url = "https://github.com/omissis/go-jsonschema/releases/download/v0.15.0/go-jsonschema_Linux_x86_64.tar.gz";
-      sha256 = "diR8EUGrEcVyhW5kAyDyHluoWRnj3lUlNL2BbhUjFS4=";
-    };
+    src = (
+      if pkgs.stdenv.hostPlatform.system == "x86_64-linux" then
+        pkgs.fetchurl {
+          url = "https://github.com/omissis/go-jsonschema/releases/download/v0.15.0/go-jsonschema_Linux_x86_64.tar.gz";
+          sha256 = "diR8EUGrEcVyhW5kAyDyHluoWRnj3lUlNL2BbhUjFS4=";
+        }
+      else if pkgs.stdenv.hostPlatform.system == "aarch64-darwin" then
+        pkgs.fetchurl {
+          url = "https://github.com/omissis/go-jsonschema/releases/download/v0.19.0/go-jsonschema_Darwin_arm64.tar.gz";
+          sha256 = "sha256-Wyke21qZXNRPvwBEMQ/540+snLwdNlKvX0ae2xIshmE=";
+        }
+      else if pkgs.stdenv.hostPlatform.system == "x86_64-darwin" then
+        pkgs.fetchurl {
+          url = "https://github.com/omissis/go-jsonschema/releases/download/v0.19.0/go-jsonschema_Darwin_x86_64.tar.gz";
+          sha256 = "";
+        }
+      else
+        throw "Unsupported system: ${pkgs.stdenv.hostPlatform.system}"
+    );
+
     dontUnpack = true;
     installPhase = ''
       mkdir -p $out/bin
@@ -31,6 +47,7 @@ let
 in
 pkgs.mkShell {
   packages = [
+    pkgs.gopls
     goEnv
     gomod2nix
     pkgs.check-jsonschema

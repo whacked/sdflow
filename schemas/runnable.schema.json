@@ -7,14 +7,36 @@
           "type": "string"
         },
         {
+          "examples": [
+            [
+              "src1.txt",
+              "foo2.csv",
+              "bar3.cpp"
+            ]
+          ],
           "items": {
             "type": "string"
           },
           "type": "array"
+        },
+        {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "examples": [
+            {
+              "SourceCode": "bar3.cpp",
+              "csv_file": "foo2.csv",
+              "myText": "src1.txt"
+            }
+          ],
+          "type": "object"
         }
       ]
     },
     "in.sha256": {
+      "maxLength": 64,
+      "minLength": 64,
       "type": "string"
     },
     "name": {
@@ -28,6 +50,8 @@
       "type": "string"
     },
     "out.sha256": {
+      "maxLength": 64,
+      "minLength": 64,
       "type": "string"
     },
     "post": {

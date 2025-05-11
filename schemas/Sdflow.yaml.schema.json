@@ -22,15 +22,56 @@
                   "type": "string"
                 },
                 {
+                  "examples": [
+                    [
+                      "src1.txt",
+                      "foo2.csv",
+                      "bar3.cpp"
+                    ]
+                  ],
                   "items": {
                     "type": "string"
                   },
                   "type": "array"
+                },
+                {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "examples": [
+                    {
+                      "SourceCode": "bar3.cpp",
+                      "csv_file": "foo2.csv",
+                      "myText": "src1.txt"
+                    }
+                  ],
+                  "type": "object"
                 }
               ]
             },
             "in.sha256": {
-              "type": "string"
+              "oneOf": [
+                {
+                  "maxLength": 64,
+                  "minLength": 64,
+                  "type": "string"
+                },
+                {
+                  "additionalProperties": {
+                    "maxLength": 64,
+                    "minLength": 64,
+                    "type": "string"
+                  },
+                  "examples": [
+                    {
+                      "SourceCode": "1c8a656566dacfaaaece7b5e3e52a59faca12d3803443a1a56fdd5a9a7b8e347",
+                      "foo2.csv": "ea8fac7c65fb589b0d53560f5251f74f9e9b243478dcb6b3ea79b5e36449c8d9",
+                      "myText": "b24b59e210cefd4d964413ac555e4573470909f8aa3d16b6b9a65ddb04490b69"
+                    }
+                  ],
+                  "type": "object"
+                }
+              ]
             },
             "name": {
               "type": "string"
@@ -43,6 +84,8 @@
               "type": "string"
             },
             "out.sha256": {
+              "maxLength": 64,
+              "minLength": 64,
               "type": "string"
             },
             "post": {

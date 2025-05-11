@@ -2,6 +2,9 @@
 
 package main
 
+import "encoding/json"
+import "fmt"
+
 type RunnableSchemaJson struct {
 	// In corresponds to the JSON schema field "in".
 	In interface{} `json:"in,omitempty" yaml:"in,omitempty" mapstructure:"in,omitempty"`
@@ -13,7 +16,7 @@ type RunnableSchemaJson struct {
 	Name *string `json:"name,omitempty" yaml:"name,omitempty" mapstructure:"name,omitempty"`
 
 	// Notify corresponds to the JSON schema field "notify".
-	Notify RunnableSchemaJsonNotify `json:"notify,omitempty" yaml:"notify,omitempty" mapstructure:"notify,omitempty"`
+	Notify map[string]interface{} `json:"notify,omitempty" yaml:"notify,omitempty" mapstructure:"notify,omitempty"`
 
 	// Out corresponds to the JSON schema field "out".
 	Out *string `json:"out,omitempty" yaml:"out,omitempty" mapstructure:"out,omitempty"`
@@ -31,4 +34,25 @@ type RunnableSchemaJson struct {
 	Run *string `json:"run,omitempty" yaml:"run,omitempty" mapstructure:"run,omitempty"`
 }
 
-type RunnableSchemaJsonNotify map[string]interface{}
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *RunnableSchemaJson) UnmarshalJSON(value []byte) error {
+	type Plain RunnableSchemaJson
+	var plain Plain
+	if err := json.Unmarshal(value, &plain); err != nil {
+		return err
+	}
+	if plain.InSha256 != nil && len(*plain.InSha256) < 64 {
+		return fmt.Errorf("field %s length: must be >= %d", "in.sha256", 64)
+	}
+	if plain.InSha256 != nil && len(*plain.InSha256) > 64 {
+		return fmt.Errorf("field %s length: must be <= %d", "in.sha256", 64)
+	}
+	if plain.OutSha256 != nil && len(*plain.OutSha256) < 64 {
+		return fmt.Errorf("field %s length: must be >= %d", "out.sha256", 64)
+	}
+	if plain.OutSha256 != nil && len(*plain.OutSha256) > 64 {
+		return fmt.Errorf("field %s length: must be <= %d", "out.sha256", 64)
+	}
+	*j = RunnableSchemaJson(plain)
+	return nil
+}

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"embed"
@@ -43,9 +44,10 @@ var zshAutoCompleteScript embed.FS
 const zshAutoCompleteScriptPath = "resources/zsh_autocomplete.sh"
 
 type RunnableTaskInput struct {
-	path string
 	// sha256 string
-	mtime int64
+	path   string
+	mtime  int64
+	alias  string // New field for named inputs
 }
 
 type RunnableTask struct {
@@ -186,35 +188,52 @@ func substituteWithContext(s string, context map[string]string) *string {
 }
 
 func renderCommand(task *RunnableTask) string {
-
-	vars := map[string]string{}
-
-	if task.taskDeclaration.In != nil {
-		vars["in"] = strings.Join(
-			func() []string {
-				var out []string
-				for _, taskInput := range task.inputs {
-					out = append(out, taskInput.path)
-				}
-				return out
-			}(), " ",
-		)
-		// generate mappings for ${in[0]}, ${in[1]}, etc
-		for i, taskInput := range task.inputs {
-			vars[fmt.Sprintf("in[%d]", i)] = taskInput.path
-		}
-	}
-	if task.taskDeclaration.Out != nil {
-		vars["out"] = *task.taskDeclaration.Out
-	}
+	fmt.Printf("task: %+v\n", task)
+	fmt.Printf("decl: %+v\n", task.taskDeclaration)
 
 	mapper := func(varName string) string {
-		// check if varName is in vars
-		if vars[varName] != "" {
-			return vars[varName]
-		} else {
-			return os.Getenv(varName)
+		fmt.Printf("HANDLING varName: %s\n", varName)
+
+		// Handle $out
+		if varName == "out" && task.taskDeclaration.Out != nil {
+			return *task.taskDeclaration.Out
 		}
+
+		// Handle $in
+		if varName == "in" {
+			var paths []string
+			for _, input := range task.inputs {
+				paths = append(paths, input.path)
+			}
+			return strings.Join(paths, " ")
+		}
+
+		// Handle ${in[N]}
+		if strings.HasPrefix(varName, "in[") && strings.HasSuffix(varName, "]") {
+			idxStr := varName[3 : len(varName)-1]
+			if idx, err := strconv.Atoi(idxStr); err == nil {
+				if input := task.getInputByIndex(idx); input != nil {
+					return input.path
+				}
+			}
+			fmt.Fprintf(os.Stderr, "!!!! WARN no input found for index: %s\n", idxStr)
+		}
+
+		// Handle ${in.foo}
+		if strings.HasPrefix(varName, "in.") {
+			alias := varName[3:]
+			if input := task.getInputByAlias(alias); input != nil {
+				return input.path
+			}
+			fmt.Fprintf(os.Stderr, "!!!! WARN no input found for alias: %s\n", alias)
+		}
+
+		// Fall back to environment variables
+		return os.Getenv(varName)
+	}
+
+	if task.taskDeclaration.Run != nil {
+		fmt.Printf("Run command: %s\n", *task.taskDeclaration.Run)
 	}
 
 	renderedCommand := os.Expand(*task.taskDeclaration.Run, mapper)
@@ -405,80 +424,9 @@ type ParsedFlowDefinition struct {
 
 func createTaskFromRunnableKeyVals(runnableData map[string]interface{}, executionEnv map[string]string) *RunnableTask {
 	task := RunnableTask{
-func parseFlowDefinitionFile(flowDefinitionFilePath string) *ParsedFlowDefinition {
-
-	taskLookup := make(map[string]*RunnableTask)
-	taskDependencies := make(map[string][]string)
-	executionEnv := make(map[string]string)
-
-	// add keyvals from environ to executionEnv
-	for _, envVar := range os.Environ() {
-		parts := strings.Split(envVar, "=")
-		executionEnv[parts[0]] = parts[1]
-	}
-
-	var flowDefinitionObject map[string]interface{}
-	flowDefinitionSource, err := os.ReadFile(flowDefinitionFilePath)
-	bailOnError(err)
-	if err := yaml.Unmarshal([]byte(flowDefinitionSource), &flowDefinitionObject); err != nil {
-		log.Fatalf("error: %v", err)
-	}
-
-	// first pass: compile the execution environment
-	for targetIdentifier, value := range flowDefinitionObject {
-
-		switch value.(type) {
-		case string: // variable definitions
-			executionEnv[targetIdentifier] = flowDefinitionObject[targetIdentifier].(string)
-		}
-	}
-
-	// second pass: retrieve tasks and substitute using executionEnv
-	for targetIdentifier, value := range flowDefinitionObject {
-
-		if executionEnv[targetIdentifier] != "" {
-			// skip variable definitions
-			continue
-		}
-		substitutedTargetName := *substituteWithContext(targetIdentifier, executionEnv)
-
-		// ensure the target is in the dependency tracker
-		if _, ok := taskDependencies[substitutedTargetName]; !ok {
-			taskDependencies[substitutedTargetName] = make([]string, 0)
-		}
-
-		switch ruleContent := value.(type) {
-
-		case string: // variable definitions
-			continue
-
-		case []interface{}: // compile subtargets
-			for _, subTarget := range ruleContent {
-				taskDependencies[substitutedTargetName] = append(
-					taskDependencies[substitutedTargetName],
-					*substituteWithContext(subTarget.(string), executionEnv))
-			}
-			task := RunnableTask{
-func createTaskFromRunnableKeyVals(runnableData map[string]interface{}, executionEnv map[string]string) *RunnableTask {
-	task := RunnableTask{
-				targetKey:  targetIdentifier,
-				targetName: substitutedTargetName,
-			}
-			taskLookup[substitutedTargetName] = &task
-
-		default: // all other cases should be map
-			runnableData := ruleContent.(map[string]interface{})
-
-			task := RunnableTask{
-				targetKey:       targetIdentifier,
-		taskDeclaration: &RunnableSchemaJson{},
-	}
-				taskDeclaration: &RunnableSchemaJson{},
-			}
 		taskDeclaration: &RunnableSchemaJson{},
 	}
 
-			task.targetName = *substituteWithContext(substitutedTargetName, executionEnv)
 	if isPath(task.targetName) {
 		fileAbsPath := getPathRelativeToCwd(task.targetName)
 		task.taskDeclaration.Out = &fileAbsPath
@@ -487,36 +435,16 @@ func createTaskFromRunnableKeyVals(runnableData map[string]interface{}, executio
 			fileAbsPath := getPathRelativeToCwd(
 				*substituteWithContext(outputPathValue.(string), executionEnv))
 			task.taskDeclaration.Out = &fileAbsPath
-			if isPath(task.targetName) {
-				fileAbsPath := getPathRelativeToCwd(task.targetName)
-				task.taskDeclaration.Out = &fileAbsPath
-			} else {
-				if outputPathValue, ok := runnableData["out"]; ok {
-					fileAbsPath := getPathRelativeToCwd(
-						*substituteWithContext(outputPathValue.(string), executionEnv))
-					task.taskDeclaration.Out = &fileAbsPath
-	if isPath(task.targetName) {
-		fileAbsPath := getPathRelativeToCwd(task.targetName)
-		task.taskDeclaration.Out = &fileAbsPath
-	} else {
-		if outputPathValue, ok := runnableData["out"]; ok {
-			fileAbsPath := getPathRelativeToCwd(
-				*substituteWithContext(outputPathValue.(string), executionEnv))
-			task.taskDeclaration.Out = &fileAbsPath
-					taskLookup[fileAbsPath] = &task
-		}
-	}
-				}
-			}
 		}
 	}
 
 	if inValue, ok := runnableData["in"]; ok {
 		task.inputs = make([]*RunnableTaskInput, 0)
-		if inArray, ok := inValue.([]interface{}); ok {
+		switch v := inValue.(type) {
+		case []interface{}:
 			// array of input target names / files
 			var inputStrings []string
-			for _, inItem := range inArray {
+			for _, inItem := range v {
 				inString := getPathRelativeToCwd(
 					*substituteWithContext(inItem.(string), executionEnv))
 				inputStrings = append(inputStrings, fmt.Sprintf("\"%s\"", inString))
@@ -526,35 +454,22 @@ func createTaskFromRunnableKeyVals(runnableData map[string]interface{}, executio
 				})
 			}
 			concatenatedInputs := strings.Join(inputStrings, " ")
-			// FIXME: probably redundant since we're using task.inputs
 			task.taskDeclaration.In = &concatenatedInputs
-		} else {
-			// assume string
-			inString := getPathRelativeToCwd(
-				*substituteWithContext(inValue.(string), executionEnv))
-			task.taskDeclaration.In = &inString
-			task.inputs = append(task.inputs, &RunnableTaskInput{
-				path:  inString,
-				alias: inString,
-			})
-					}
-					}
-					concatenatedInputs := strings.Join(inputStrings, " ")
-					// FIXME: probably redundant since we're using task.inputs
-					task.taskDeclaration.In = &concatenatedInputs
-				} else {
-					// assume string
-					inString := getPathRelativeToCwd(
-						*substituteWithContext(inValue.(string), executionEnv))
-					task.taskDeclaration.In = &inString
-					task.inputs = append(task.inputs, &RunnableTaskInput{
-						path: inString,
-					})
+		case map[string]interface{}:
+			// map of alias -> input path
+			var inputStrings []string
+			for alias, inItem := range v {
+				inString := getPathRelativeToCwd(
+					*substituteWithContext(inItem.(string), executionEnv))
+				inputStrings = append(inputStrings, fmt.Sprintf("\"%s\"", inString))
+				task.inputs = append(task.inputs, &RunnableTaskInput{
+					path:  inString,
+					alias: alias,
+				})
 			}
 			concatenatedInputs := strings.Join(inputStrings, " ")
-			// FIXME: probably redundant since we're using task.inputs
 			task.taskDeclaration.In = &concatenatedInputs
-		} else {
+		default:
 			// assume string
 			inString := getPathRelativeToCwd(
 				*substituteWithContext(inValue.(string), executionEnv))
@@ -562,54 +477,9 @@ func createTaskFromRunnableKeyVals(runnableData map[string]interface{}, executio
 			task.inputs = append(task.inputs, &RunnableTaskInput{
 				path: inString,
 			})
-					taskDependencies[substitutedTargetName] = append(
-						taskDependencies[substitutedTargetName], inString)
-		}
-	}
-				}
-			}
-		}
-		}
-					concatenatedInputs := strings.Join(inputStrings, " ")
-					// FIXME: probably redundant since we're using task.inputs
-					task.taskDeclaration.In = &concatenatedInputs
-				} else {
-					// assume string
-					inString := getPathRelativeToCwd(
-						*substituteWithContext(inValue.(string), executionEnv))
-					task.taskDeclaration.In = &inString
-					task.inputs = append(task.inputs, &RunnableTaskInput{
-						path: inString,
-					})
-			}
-			concatenatedInputs := strings.Join(inputStrings, " ")
-			// FIXME: probably redundant since we're using task.inputs
-			task.taskDeclaration.In = &concatenatedInputs
-		} else {
-			// assume string
-			inString := getPathRelativeToCwd(
-				*substituteWithContext(inValue.(string), executionEnv))
-			task.taskDeclaration.In = &inString
-			task.inputs = append(task.inputs, &RunnableTaskInput{
-				path: inString,
-			})
-					taskDependencies[substitutedTargetName] = append(
-						taskDependencies[substitutedTargetName], inString)
-		}
-	}
-				}
-			}
 		}
 	}
 
-	if inSha256Value, ok := runnableData["in.sha256"]; ok {
-		inSha256String := inSha256Value.(string)
-		task.taskDeclaration.InSha256 = &inSha256String
-	}
-			if inSha256Value, ok := runnableData["in.sha256"]; ok {
-				inSha256String := inSha256Value.(string)
-				task.taskDeclaration.InSha256 = &inSha256String
-			}
 	if inSha256Value, ok := runnableData["in.sha256"]; ok {
 		inSha256String := inSha256Value.(string)
 		task.taskDeclaration.InSha256 = &inSha256String
@@ -619,25 +489,7 @@ func createTaskFromRunnableKeyVals(runnableData map[string]interface{}, executio
 		outSha256String := outSha256Value.(string)
 		task.taskDeclaration.OutSha256 = &outSha256String
 	}
-			if outSha256Value, ok := runnableData["out.sha256"]; ok {
-				outSha256String := outSha256Value.(string)
-				task.taskDeclaration.OutSha256 = &outSha256String
-			}
-	if outSha256Value, ok := runnableData["out.sha256"]; ok {
-		outSha256String := outSha256Value.(string)
-		task.taskDeclaration.OutSha256 = &outSha256String
-	}
 
-	if runnableValue, ok := runnableData["run"]; ok {
-		runString := runnableValue.(string)
-		task.taskDeclaration.Run = &runString
-	}
-	populateTaskModTimes(&task)
-			if runnableValue, ok := runnableData["run"]; ok {
-				runString := runnableValue.(string)
-				task.taskDeclaration.Run = &runString
-			}
-			populateTaskModTimes(&task)
 	if runnableValue, ok := runnableData["run"]; ok {
 		runString := runnableValue.(string)
 		task.taskDeclaration.Run = &runString
@@ -720,16 +572,6 @@ func parseFlowDefinitionSource(flowDefinitionSource string) *ParsedFlowDefinitio
 				targetName: substitutedTargetName,
 			}
 			taskLookup[substitutedTargetName] = &task
-
-		default: // all other cases should be map
-			runnableData := ruleContent.(map[string]interface{})
-			task := createTaskFromRunnableKeyVals(runnableData, executionEnv)
-			task.targetKey = targetIdentifier
-			task.targetName = substitutedTargetName
-			taskLookup[substitutedTargetName] = task
-			if task.taskDeclaration.Out != nil {
-				taskLookup[*task.taskDeclaration.Out] = task
-			}
 
 		default: // all other cases should be map
 			runnableData := ruleContent.(map[string]interface{})
@@ -830,6 +672,57 @@ func reformatFlowDefinitionFile(flowDefinitionFile string) string {
 
 	updatedYaml := string(outputBuffer.String())
 	return addInterveningSpacesToRootLevelBlocks(updatedYaml)
+}
+
+// For ordered access (indices)
+func (task *RunnableTask) getInputByIndex(idx int) *RunnableTaskInput {
+	if idx >= 0 && idx < len(task.inputs) {
+		return task.inputs[idx]
+	}
+	return nil
+}
+
+// For named access (aliases)
+func (task *RunnableTask) getInputByAlias(alias string) *RunnableTaskInput {
+	for _, input := range task.inputs {
+		if input.alias == alias {
+			return input
+		}
+	}
+	return nil
+}
+
+func (task *RunnableTask) expandInputReference(ref string) string {
+	// Handle $in case - expand all inputs
+	if ref == "in" {
+		var paths []string
+		for _, input := range task.inputs {
+			paths = append(paths, input.path)
+		}
+		return strings.Join(paths, " ")
+	}
+
+	// Handle ${in[0]} case
+	if strings.HasPrefix(ref, "in[") && strings.HasSuffix(ref, "]") {
+		idxStr := ref[3 : len(ref)-1]
+		if idx, err := strconv.Atoi(idxStr); err == nil {
+			if input := task.getInputByIndex(idx); input != nil {
+				return input.path
+			}
+		}
+		return ""
+	}
+
+	// Handle ${in.foo} case
+	if strings.HasPrefix(ref, "in.") {
+		alias := ref[3:]
+		if input := task.getInputByAlias(alias); input != nil {
+			return input.path
+		}
+		return ""
+	}
+
+	return ""
 }
 
 func main() {

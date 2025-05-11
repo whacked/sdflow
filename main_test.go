@@ -170,15 +170,72 @@ myTarget:
 	}
 
 	if task.inputs[0].alias != "foo.txt" {
-		t.Fatalf("input 0 alias wrong: %s", task.inputs[0].alias)
+		t.Fatalf("input 0 alias wrong: %s (expected foo.txt)", task.inputs[0].alias)
 	}
 	if task.inputs[1].alias != "second.txt" {
-		t.Fatalf("input 1 alias wrong: %s", task.inputs[1].alias)
+		t.Fatalf("input 1 alias wrong: %s (expected second.txt)", task.inputs[1].alias)
 	}
 
 	renderedCommand := renderCommand(task)
 	expectedCommand := "echo between foo.txt and last.3 we have === foo.txt second.txt last.3 === foo.txt second.txt last.3"
 	if renderedCommand != expectedCommand {
 		t.Fatalf("rendered command incorrect\nexpected: %s\ngot: %s", expectedCommand, renderedCommand)
+	}
+}
+
+func TestParseFlowDefinitionFileInputMapSyntax(t *testing.T) {
+	yaml := `
+SCHEMAS_DIR: ./schemas
+myTarget:
+  in:
+    first: foo.txt
+    second: second.txt
+    last: last.3
+  run: echo between ${in.first} and ${in.last}; $in === ${in}
+`
+	pfd := parseFlowDefinitionSource(yaml)
+
+	task, _ := pfd.taskLookup["myTarget"]
+	if len(task.inputs) != 3 {
+		t.Fatalf("expected 3 inputs, got %d", len(task.inputs))
+	}
+
+	expectedInputs := map[string]bool{
+		"foo.txt":    false,
+		"second.txt": false,
+		"last.3":     false,
+	}
+	for _, input := range task.inputs {
+		if _, exists := expectedInputs[input.path]; !exists {
+			t.Fatalf("unexpected input: %s", input.path)
+		}
+		expectedInputs[input.path] = true
+	}
+
+	for path, found := range expectedInputs {
+		if !found {
+			t.Fatalf("missing expected input: %s", path)
+		}
+	}
+
+	renderedCommand := renderCommand(task)
+
+	// Split on semicolon and verify first part
+	parts := strings.Split(renderedCommand, ";")
+	expectedFirstPart := "echo between foo.txt and last.3"
+	if strings.TrimSpace(parts[0]) != expectedFirstPart {
+		t.Fatalf("first part incorrect\nexpected: %s\ngot: %s", expectedFirstPart, strings.TrimSpace(parts[0]))
+	}
+
+	// Split second part on === and verify both segments are identical
+	segments := strings.Split(strings.TrimSpace(parts[1]), "===")
+	if len(segments) != 2 {
+		t.Fatalf("expected 2 segments separated by ===, got %d segments", len(segments))
+	}
+
+	seg1 := strings.TrimSpace(segments[0])
+	seg2 := strings.TrimSpace(segments[1])
+	if seg1 != seg2 {
+		t.Fatalf("segments not equal\nfirst: %s\nsecond: %s", seg1, seg2)
 	}
 }
