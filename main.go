@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -767,7 +768,22 @@ func runFlowDefinitionProcessor(flowDefinitionFilePath string, shouldWriteOutSha
 	parsedFlowDefinition := parseFlowDefinitionFile(flowDefinitionFilePath)
 
 	if len(os.Args) == 1 {
+		// Collect and sort target identifiers
+		var targetIdentifiers []string
 		for targetIdentifier := range parsedFlowDefinition.taskDependencies {
+			targetIdentifiers = append(targetIdentifiers, targetIdentifier)
+		}
+
+		// Sort case-insensitive, trimming leading . and /
+		sort.Slice(targetIdentifiers, func(i, j int) bool {
+			// Trim leading . and / for comparison
+			trimI := strings.TrimLeft(targetIdentifiers[i], "./")
+			trimJ := strings.TrimLeft(targetIdentifiers[j], "./")
+			return strings.ToLower(trimI) < strings.ToLower(trimJ)
+		})
+
+		// Print tasks in sorted order
+		for _, targetIdentifier := range targetIdentifiers {
 			task := parsedFlowDefinition.taskLookup[targetIdentifier]
 			printVitalsForTask(task)
 		}
