@@ -516,6 +516,9 @@ func getPathRelativeToCwd(path string) string {
 	bailOnError(err)
 	relPath, err := filepath.Rel(cwd, absPath)
 	bailOnError(err)
+	if !strings.HasPrefix(relPath, ".") {
+		relPath = "./" + relPath
+	}
 	return relPath
 }
 

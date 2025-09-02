@@ -157,9 +157,15 @@ SCHEMAS_DIR: ./schemas
 	if len(task.inputs) != 1 || !strings.HasSuffix(task.inputs[0].path, "schemas/foo.txt") {
 		t.Fatalf("input not parsed/substituted correctly: %+v", task.inputs)
 	}
-	if task.taskDeclaration == nil || task.taskDeclaration.Out == nil ||
-		*task.taskDeclaration.Out != "./implied-file.dat" {
-		t.Fatalf("out path wrong: %+v", task.taskDeclaration)
+	expectedOut := "./implied-file.dat"
+	if task.taskDeclaration == nil {
+		t.Fatalf("taskDeclaration is nil, expected Out: %q", expectedOut)
+	}
+	if task.taskDeclaration.Out == nil {
+		t.Fatalf("taskDeclaration.Out is nil, expected Out: %q", expectedOut)
+	}
+	if *task.taskDeclaration.Out != expectedOut {
+		t.Fatalf("out path wrong: expected %q, got %q (taskDeclaration: %+v)", expectedOut, *task.taskDeclaration.Out, task.taskDeclaration)
 	}
 }
 
