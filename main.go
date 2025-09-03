@@ -189,7 +189,7 @@ func substituteWithContext(s string, context map[string]string) *string {
 	return &substituted
 }
 
-func renderCommand(task *RunnableTask) string {
+func renderCommand(task *RunnableTask, env map[string]string) string {
 
 	mapper := func(varName string) string {
 
@@ -225,6 +225,11 @@ func renderCommand(task *RunnableTask) string {
 				return input.path
 			}
 			fmt.Fprintf(os.Stderr, "!!!! WARN no input found for alias: %s\n", alias)
+		}
+
+		// check if the variable is in the environment
+		if envValue, ok := env[varName]; ok {
+			return envValue
 		}
 
 		// Fall back to environment variables
@@ -466,11 +471,7 @@ func runTask(task *RunnableTask, env map[string]string, shouldUpdateOutSha256 bo
 	}
 
 	if task.taskDeclaration.Run != nil {
-		command := renderCommand(task)
-		fmt.Fprint(
-			os.Stderr,
-			color.GreenString("Command: %s\n", command),
-		)
+		command := renderCommand(task, env)
 
 		cmd := exec.Command("bash", "-c", command)
 		cmd.Stdout = os.Stdout
@@ -765,7 +766,7 @@ func parseFlowDefinitionSource(flowDefinitionSource string) *ParsedFlowDefinitio
 	parsedFlowDefinition := ParsedFlowDefinition{
 		taskLookup:       taskLookup,
 		taskDependencies: taskDependencies,
-		executionEnv:     make(map[string]string),
+		executionEnv:     executionEnv,
 	}
 	return &parsedFlowDefinition
 }

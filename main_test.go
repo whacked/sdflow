@@ -31,6 +31,45 @@ myproject:
 /*                                real tests                                  */
 /* -------------------------------------------------------------------------- */
 
+func TestParseFlowDefinitionEnvironmentVariables(t *testing.T) {
+	yaml := `
+SCHEMAS_DIR: ./schemas
+SPACES_IN_STRING: a b c
+version_string: 0.0.1
+BUILD_TYPE: debuggery
+`
+	pfd := parseFlowDefinitionSource(yaml)
+
+	// Check that all YAML environment variables were parsed correctly
+	expectedVars := map[string]string{
+		"SCHEMAS_DIR":      "./schemas",
+		"SPACES_IN_STRING": "a b c",
+		"version_string":   "0.0.1",
+		"BUILD_TYPE":       "debuggery",
+	}
+
+	for key, expectedValue := range expectedVars {
+		if actualValue, exists := pfd.executionEnv[key]; !exists {
+			t.Errorf("environment variable %s not found in executionEnv", key)
+		} else if actualValue != expectedValue {
+			t.Errorf("environment variable %s: expected %q, got %q", key, expectedValue, actualValue)
+		}
+	}
+
+	// Verify that YAML variables are present (OS env vars are also included, so we can't check exact count)
+	if len(pfd.executionEnv) < len(expectedVars) {
+		t.Errorf("executionEnv should contain at least %d variables (YAML vars), got %d", len(expectedVars), len(pfd.executionEnv))
+	}
+
+	// Verify that YAML variables override OS environment variables
+	// This is the key behavior we want to test
+	for key, expectedValue := range expectedVars {
+		if pfd.executionEnv[key] != expectedValue {
+			t.Errorf("YAML variable %s should override OS environment variable: expected %q, got %q", key, expectedValue, pfd.executionEnv[key])
+		}
+	}
+}
+
 func TestSubstituteWithContext(t *testing.T) {
 	ctx := map[string]string{"NAME": "World"}
 	out := substituteWithContext("Hello ${NAME}", ctx)
@@ -97,6 +136,27 @@ func TestRenderCommand(t *testing.T) {
 			},
 			env:         map[string]string{},
 			wantCommand: "cp src1.txt ./bar/dst.txt",
+		},
+		{
+			name: "variable substitution from env",
+			runnable: map[string]interface{}{
+				"run": "echo 'version ${version_string}'",
+			},
+			env: map[string]string{
+				"version_string": "0.0.1",
+			},
+			wantCommand: "echo 'version 0.0.1'",
+		},
+		{
+			name: "variable substitution with multiple vars",
+			runnable: map[string]interface{}{
+				"run": "echo '${THING1} ${GENERATORS_DIR}'",
+			},
+			env: map[string]string{
+				"THING1":         "thing1",
+				"GENERATORS_DIR": "./generators",
+			},
+			wantCommand: "echo 'thing1 ./generators'",
 		},
 	}
 
@@ -200,7 +260,7 @@ myTarget:
 		t.Fatalf("input 1 alias wrong: %s (expected second.txt)", task.inputs[1].alias)
 	}
 
-	renderedCommand := renderCommand(task)
+	renderedCommand := renderCommand(task, pfd.executionEnv)
 	expectedCommand := "echo between foo.txt and last.3 we have === foo.txt second.txt last.3 === foo.txt second.txt last.3"
 	if renderedCommand != expectedCommand {
 		t.Fatalf("rendered command incorrect\nexpected: %s\ngot: %s", expectedCommand, renderedCommand)
@@ -242,7 +302,7 @@ myTarget:
 		}
 	}
 
-	renderedCommand := renderCommand(task)
+	renderedCommand := renderCommand(task, pfd.executionEnv)
 
 	// Split on semicolon and verify first part
 	parts := strings.Split(renderedCommand, ";")
