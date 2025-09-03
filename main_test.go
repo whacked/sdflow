@@ -697,6 +697,123 @@ step3:
 	assertTaskDependencies(t, step3, []string{"step1", "step2"}) // includes transitive dependency step1
 }
 
+func TestMixedExplicitImplicitDependencies(t *testing.T) {
+	yaml := `
+# Base file producer
+base:
+  out: base.txt
+  run: echo "base" > $out
+
+# Intermediate file producer 1
+intermediate1:
+  in: base.txt
+  out: intermediate1.txt
+  run: cp $in $out
+
+# Intermediate file producer 2
+intermediate2:
+  in: base.txt
+  out: intermediate2.txt
+  run: echo "intermediate2" > $out
+
+# Explicit array-style dependency group that references multiple tasks
+deps:
+  - intermediate1
+  - intermediate2
+
+# Task with implicit dependency on deps array via ${deps} reference
+final:
+  in: ${deps}
+  out: final.txt
+  run: cat $in > $out
+`
+	pfd := parseFlowDefinitionSource(yaml)
+
+	// Get tasks
+	base := pfd.taskLookup["base"]
+	if base == nil {
+		t.Fatalf("base task not found")
+	}
+
+	intermediate1 := pfd.taskLookup["intermediate1"]
+	if intermediate1 == nil {
+		t.Fatalf("intermediate1 task not found")
+	}
+
+	intermediate2 := pfd.taskLookup["intermediate2"]
+	if intermediate2 == nil {
+		t.Fatalf("intermediate2 task not found")
+	}
+
+	final := pfd.taskLookup["final"]
+	if final == nil {
+		t.Fatalf("final task not found")
+	}
+
+	// Test that both explicit and implicit dependencies work:
+	// - base has no dependencies
+	// - intermediate1 has implicit dependency on base (via base.txt)
+	// - intermediate2 has implicit dependency on base (via base.txt)
+	// - final has implicit dependency on intermediate1 and intermediate2 (via ${deps} expansion)
+	assertTaskDependencies(t, base, []string{})
+	assertTaskDependencies(t, intermediate1, []string{"base"})
+	assertTaskDependencies(t, intermediate2, []string{"base"})
+	assertTaskDependencies(t, final, []string{"base", "intermediate1", "intermediate2"}) // includes transitive dependencies
+
+	// Test that the deps array variable is properly expanded in the final task
+	// The ${deps} should expand to an array of task names, not a space-joined string
+	if final.taskDeclaration.In == nil {
+		t.Fatalf("final task should have input defined")
+	}
+
+	// Check that the input was properly expanded from the deps array
+	expectedInputs := []string{"intermediate1", "intermediate2"}
+
+	if len(final.inputs) != len(expectedInputs) {
+		t.Fatalf("expected %d inputs, got %d", len(expectedInputs), len(final.inputs))
+	}
+
+	// test that final.inputs has the same contents as expectedInputs
+	for i, input := range expectedInputs {
+		if final.inputs[i].path != input {
+			t.Fatalf("expected input %s not found in final.inputs: %v", input, final.inputs)
+		}
+	}
+
+	yaml2 := `
+# test that array variable expansion works within an array
+intermediate1:
+  out: intermediate1.txt
+  run: echo "intermediate1" > $out
+
+intermediate2:
+  out: intermediate2.txt
+  run: echo "intermediate2" > $out
+
+intermediate3:
+  out: intermediate3.txt
+  run: echo "intermediate3" > $out
+
+deps:
+  - intermediate1
+  - intermediate2
+
+final2:
+  in:
+  - ${deps}
+  - intermediate3
+  out: final2.txt
+  run: cat $in > $out
+`
+	pfd2 := parseFlowDefinitionSource(yaml2)
+
+	final2 := pfd2.taskLookup["final2"]
+	if final2 == nil {
+		t.Fatalf("final2 task not found")
+	}
+
+	assertTaskDependencies(t, final2, []string{"intermediate1", "intermediate2", "intermediate3"})
+}
 
 func TestArrayVariableExpansion(t *testing.T) {
 	yamlContent := `

@@ -529,7 +529,7 @@ func createTaskFromRunnableKeyVals(
 	targetIdentifier string,
 	substitutedTargetName string,
 	runnableData map[string]interface{},
-	executionEnv map[string]string,
+	executionEnv map[string][]string,
 ) *RunnableTask {
 	task := RunnableTask{
 		targetKey:       targetIdentifier,
@@ -560,13 +560,18 @@ func createTaskFromRunnableKeyVals(
 			// array of input target names / files
 			var inputStrings []string
 			for _, inItem := range v {
-				inString := getPathRelativeToCwd(
-					*substituteWithContext(inItem.(string), convertArrayMapToStringMap(executionEnv)))
-				inputStrings = append(inputStrings, fmt.Sprintf("\"%s\"", inString))
-				task.inputs = append(task.inputs, &RunnableTaskInput{
-					path:  inString,
-					alias: inString,
-				})
+				itemStr := inItem.(string)
+				// Check if this item is an array variable reference that should be expanded
+				expandedInputs := expandArrayVariableInInput(itemStr, executionEnv)
+				
+				for _, expandedInput := range expandedInputs {
+					inString := getPathRelativeToCwd(expandedInput)
+					inputStrings = append(inputStrings, fmt.Sprintf("\"%s\"", inString))
+					task.inputs = append(task.inputs, &RunnableTaskInput{
+						path:  inString,
+						alias: inString,
+					})
+				}
 			}
 			concatenatedInputs := strings.Join(inputStrings, " ")
 			task.taskDeclaration.In = &concatenatedInputs
@@ -585,13 +590,27 @@ func createTaskFromRunnableKeyVals(
 			concatenatedInputs := strings.Join(inputStrings, " ")
 			task.taskDeclaration.In = &concatenatedInputs
 		default:
-			// assume string
-			inString := getPathRelativeToCwd(
-				*substituteWithContext(inValue.(string), convertArrayMapToStringMap(executionEnv)))
-			task.taskDeclaration.In = &inString
-			task.inputs = append(task.inputs, &RunnableTaskInput{
-				path: inString,
-			})
+			// assume string - but check if it's an array variable reference
+			inputStr := inValue.(string)
+			expandedInputs := expandArrayVariableInInput(inputStr, executionEnv)
+
+			var inputStrings []string
+			for _, expandedInput := range expandedInputs {
+				inString := getPathRelativeToCwd(expandedInput)
+				inputStrings = append(inputStrings, fmt.Sprintf("\"%s\"", inString))
+				task.inputs = append(task.inputs, &RunnableTaskInput{
+					path: inString,
+				})
+			}
+
+			if len(expandedInputs) == 1 {
+				// Single input - use the simple form
+				task.taskDeclaration.In = &expandedInputs[0]
+			} else {
+				// Multiple inputs - use space-separated quoted form
+				concatenatedInputs := strings.Join(inputStrings, " ")
+				task.taskDeclaration.In = &concatenatedInputs
+			}
 		}
 	}
 	if inSha256Value, ok := runnableData["in.sha256"]; ok {
@@ -758,19 +777,19 @@ func addImplicitDependencies(taskLookup map[string]*RunnableTask, taskDependenci
 		if task.taskDeclaration == nil {
 			continue
 		}
-		
+
 		// Only process tasks that are actual task names, not output file aliases
 		// Check if this taskName exists in taskDependencies (which only contains real task names)
 		if _, isRealTask := taskDependencies[taskName]; !isRealTask {
 			continue
 		}
-		
+
 		for _, input := range task.inputs {
-			// Check if input path matches any task's output
+			// Check if input path matches any task's output file
 			if producingTask, exists := taskLookup[input.path]; exists {
-				if producingTask.taskDeclaration != nil && producingTask.taskDeclaration.Out != nil && 
-				   *producingTask.taskDeclaration.Out == input.path {
-					
+				if producingTask.taskDeclaration != nil && producingTask.taskDeclaration.Out != nil &&
+					*producingTask.taskDeclaration.Out == input.path {
+
 					// Find the actual task name that produces this output (not the output file alias)
 					var producingTaskName string
 					for name, t := range taskLookup {
@@ -779,7 +798,7 @@ func addImplicitDependencies(taskLookup map[string]*RunnableTask, taskDependenci
 							break
 						}
 					}
-					
+
 					if producingTaskName != "" {
 						// Check if this dependency already exists to avoid duplicates
 						dependencyExists := false
@@ -789,7 +808,7 @@ func addImplicitDependencies(taskLookup map[string]*RunnableTask, taskDependenci
 								break
 							}
 						}
-						
+
 						if !dependencyExists {
 							// Add implicit dependency using the task name, not the output file
 							taskDependencies[taskName] = append(taskDependencies[taskName], producingTaskName)
@@ -797,11 +816,33 @@ func addImplicitDependencies(taskLookup map[string]*RunnableTask, taskDependenci
 					}
 				}
 			}
+
+			// Also check if input path matches a task name directly (for task references)
+			if producingTask, exists := taskLookup[input.path]; exists {
+				if producingTask.taskDeclaration != nil && producingTask.targetName == input.path {
+					// This is a direct task reference
+					producingTaskName := producingTask.targetName
+
+					// Check if this dependency already exists to avoid duplicates
+					dependencyExists := false
+					for _, existingDep := range taskDependencies[taskName] {
+						if existingDep == producingTaskName {
+							dependencyExists = true
+							break
+						}
+					}
+
+					if !dependencyExists {
+						// Add implicit dependency using the task name
+						taskDependencies[taskName] = append(taskDependencies[taskName], producingTaskName)
+					}
+				}
+			}
 		}
 	}
 }
 
-func runFlowDefinitionProcessor(flowDefinitionFilePath string, shouldWriteOutSha256 bool, shouldForceRun bool, isDryRun bool) {
+func runFlowDefinitionProcessor(flowDefinitionFilePath string, shouldWriteOutSha256 bool, shouldForceRun bool) {
 
 	parsedFlowDefinition := parseFlowDefinitionFile(flowDefinitionFilePath)
 
@@ -876,57 +917,6 @@ func reformatFlowDefinitionFile(flowDefinitionFile string) string {
 
 	updatedYaml := string(outputBuffer.String())
 	return addInterveningSpacesToRootLevelBlocks(updatedYaml)
-}
-
-// For ordered access (indices)
-func (task *RunnableTask) getInputByIndex(idx int) *RunnableTaskInput {
-	if idx >= 0 && idx < len(task.inputs) {
-		return task.inputs[idx]
-	}
-	return nil
-}
-
-// For named access (aliases)
-func (task *RunnableTask) getInputByAlias(alias string) *RunnableTaskInput {
-	for _, input := range task.inputs {
-		if input.alias == alias {
-			return input
-		}
-	}
-	return nil
-}
-
-func (task *RunnableTask) expandInputReference(ref string) string {
-	// Handle $in case - expand all inputs
-	if ref == "in" {
-		var paths []string
-		for _, input := range task.inputs {
-			paths = append(paths, input.path)
-		}
-		return strings.Join(paths, " ")
-	}
-
-	// Handle ${in[0]} case
-	if strings.HasPrefix(ref, "in[") && strings.HasSuffix(ref, "]") {
-		idxStr := ref[3 : len(ref)-1]
-		if idx, err := strconv.Atoi(idxStr); err == nil {
-			if input := task.getInputByIndex(idx); input != nil {
-				return input.path
-			}
-		}
-		return ""
-	}
-
-	// Handle ${in.foo} case
-	if strings.HasPrefix(ref, "in.") {
-		alias := ref[3:]
-		if input := task.getInputByAlias(alias); input != nil {
-			return input.path
-		}
-		return ""
-	}
-
-	return ""
 }
 
 func main() {

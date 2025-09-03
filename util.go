@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 
 	yaml "gopkg.in/yaml.v3"
@@ -428,4 +429,27 @@ func convertArrayMapToStringMap(arrayEnv map[string][]string) map[string]string 
 		}
 	}
 	return stringEnv
+}
+
+func expandArrayVariableInInput(inputStr string, executionEnv map[string][]string) []string {
+	// Check if the input string is a simple variable reference like "${varname}"
+	re := regexp.MustCompile(`^\$\{([^}]+)\}$`)
+	match := re.FindStringSubmatch(inputStr)
+	
+	if len(match) == 2 {
+		varName := match[1]
+		if values, exists := executionEnv[varName]; exists {
+			if len(values) > 1 {
+				// Multiple values - return the array
+				return values
+			} else if len(values) == 1 {
+				// Single value - return as single-element array
+				return []string{values[0]}
+			}
+		}
+	}
+	
+	// Not a simple array variable reference - expand normally and return as single item
+	expanded := expandVariables(inputStr, executionEnv)
+	return []string{expanded}
 }
