@@ -743,6 +743,9 @@ func parseFlowDefinitionSource(flowDefinitionSource string) *ParsedFlowDefinitio
 		}
 	}
 
+	// Add implicit dependencies based on input/output file matching
+	addImplicitDependencies(taskLookup, taskDependencies)
+
 	// populate the dependencies
 	for targetIdentifier := range taskDependencies {
 		task := taskLookup[targetIdentifier]
@@ -767,7 +770,55 @@ func parseFlowDefinitionSource(flowDefinitionSource string) *ParsedFlowDefinitio
 	return &parsedFlowDefinition
 }
 
-func runFlowDefinitionProcessor(flowDefinitionFilePath string, shouldWriteOutSha256 bool, shouldForceRun bool) {
+func addImplicitDependencies(taskLookup map[string]*RunnableTask, taskDependencies map[string][]string) {
+	for taskName, task := range taskLookup {
+		if task.taskDeclaration == nil {
+			continue
+		}
+		
+		// Only process tasks that are actual task names, not output file aliases
+		// Check if this taskName exists in taskDependencies (which only contains real task names)
+		if _, isRealTask := taskDependencies[taskName]; !isRealTask {
+			continue
+		}
+		
+		for _, input := range task.inputs {
+			// Check if input path matches any task's output
+			if producingTask, exists := taskLookup[input.path]; exists {
+				if producingTask.taskDeclaration != nil && producingTask.taskDeclaration.Out != nil && 
+				   *producingTask.taskDeclaration.Out == input.path {
+					
+					// Find the actual task name that produces this output (not the output file alias)
+					var producingTaskName string
+					for name, t := range taskLookup {
+						if t == producingTask && name == producingTask.targetName {
+							producingTaskName = name
+							break
+						}
+					}
+					
+					if producingTaskName != "" {
+						// Check if this dependency already exists to avoid duplicates
+						dependencyExists := false
+						for _, existingDep := range taskDependencies[taskName] {
+							if existingDep == producingTaskName {
+								dependencyExists = true
+								break
+							}
+						}
+						
+						if !dependencyExists {
+							// Add implicit dependency using the task name, not the output file
+							taskDependencies[taskName] = append(taskDependencies[taskName], producingTaskName)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+func runFlowDefinitionProcessor(flowDefinitionFilePath string, shouldWriteOutSha256 bool, shouldForceRun bool, isDryRun bool) {
 
 	parsedFlowDefinition := parseFlowDefinitionFile(flowDefinitionFilePath)
 

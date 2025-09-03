@@ -456,3 +456,113 @@ myTarget:
 		})
 	}
 }
+
+
+func TestBasicImplicitDependency(t *testing.T) {
+	yaml := `
+producer:
+  out: shared.txt
+  run: echo "data" > $out
+
+consumer:
+  in: shared.txt
+  out: result.txt
+  run: cp $in $out
+`
+
+	pfd := parseFlowDefinitionSource(yaml)
+
+	consumer := pfd.taskLookup["consumer"]
+	if consumer == nil {
+		t.Fatalf("consumer task not found")
+	}
+
+	producer := pfd.taskLookup["producer"]
+	if producer == nil {
+		t.Fatalf("producer task not found")
+	}
+
+	assertTaskDependencies(t, consumer, []string{"producer"})
+	assertTaskDependencies(t, producer, []string{})
+}
+
+func TestMultipleConsumersImplicitDependency(t *testing.T) {
+	yaml := `
+shared-dep:
+  out: shared.txt
+  run: echo "shared data" > $out
+
+taskA:
+  in: shared.txt
+  out: a.txt
+  run: cp $in $out
+
+taskB:
+  in: shared.txt
+  out: b.txt
+  run: cp $in $out
+`
+	pfd := parseFlowDefinitionSource(yaml)
+
+	sharedDep := pfd.taskLookup["shared-dep"]
+	if sharedDep == nil {
+		t.Fatalf("shared-dep task not found")
+	}
+
+	taskA := pfd.taskLookup["taskA"]
+	if taskA == nil {
+		t.Fatalf("taskA task not found")
+	}
+
+	taskB := pfd.taskLookup["taskB"]
+	if taskB == nil {
+		t.Fatalf("taskB task not found")
+	}
+
+	assertTaskDependencies(t, taskA, []string{"shared-dep"})
+	assertTaskDependencies(t, taskB, []string{"shared-dep"})
+
+	assertTaskDependencies(t, sharedDep, []string{})
+}
+
+func TestDependencyChainImplicitDependencies(t *testing.T) {
+	yaml := `
+step1:
+  out: step1.txt
+  run: echo "step1" > $out
+
+step2:
+  in: step1.txt
+  out: step2.txt
+  run: echo "step2" >> $in && cp $in $out
+
+step3:
+  in: step2.txt
+  out: final.txt
+  run: cp $in $out
+`
+	pfd := parseFlowDefinitionSource(yaml)
+
+	// Get tasks
+	step1 := pfd.taskLookup["step1"]
+	if step1 == nil {
+		t.Fatalf("step1 task not found")
+	}
+
+	step2 := pfd.taskLookup["step2"]
+	if step2 == nil {
+		t.Fatalf("step2 task not found")
+	}
+
+	step3 := pfd.taskLookup["step3"]
+	if step3 == nil {
+		t.Fatalf("step3 task not found")
+	}
+
+	// Test the dependency chain: step1 -> step2 -> step3
+	// Note: The topological sort includes transitive dependencies for correct execution order
+	assertTaskDependencies(t, step1, []string{})                 // no dependencies
+	assertTaskDependencies(t, step2, []string{"step1"})          // depends on step1 via step1.txt
+	assertTaskDependencies(t, step3, []string{"step1", "step2"}) // includes transitive dependency step1
+}
+
