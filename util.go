@@ -360,3 +360,72 @@ func getOsEnvironAsMap() map[string]string {
 	}
 	return environ
 }
+
+func convertEnvironToArrayMap(environ map[string]string) map[string][]string {
+	arrayEnv := make(map[string][]string)
+	for key, value := range environ {
+		arrayEnv[key] = []string{value}
+	}
+	return arrayEnv
+}
+
+func prepareExpandableTemplate(template string, executionEnv map[string][]string) string {
+	// Replace ${VAR[i]} syntax with ${VAR_i} for os.Expand compatibility
+	re := regexp.MustCompile(`\$\{([^}]+)\[(\d+)\]\}`)
+	return re.ReplaceAllStringFunc(template, func(match string) string {
+		parts := re.FindStringSubmatch(match)
+		if len(parts) != 3 {
+			return match
+		}
+		
+		varName := parts[1]
+		indexStr := parts[2]
+		index, err := strconv.Atoi(indexStr)
+		if err != nil {
+			return match
+		}
+		
+		// Check if the variable exists and index is valid
+		if values, exists := executionEnv[varName]; exists && index < len(values) {
+			return fmt.Sprintf("${%s_%d}", varName, index)
+		}
+		
+		return match
+	})
+}
+
+func expandVariables(template string, executionEnv map[string][]string) string {
+	// First pass: prepare ${VAR[i]} syntax for os.Expand
+	preparedTemplate := prepareExpandableTemplate(template, executionEnv)
+	
+	// Create a flat environment map for os.Expand
+	flatEnv := make(map[string]string)
+	for varName, values := range executionEnv {
+		// Add array variable as space-separated string
+		flatEnv[varName] = strings.Join(values, " ")
+		
+		// Add individual indexed variables (VAR_0, VAR_1, etc.)
+		for i, value := range values {
+			flatEnv[fmt.Sprintf("%s_%d", varName, i)] = value
+		}
+	}
+	
+	// Second pass: use os.Expand for standard ${VAR} syntax
+	return os.Expand(preparedTemplate, func(key string) string {
+		if value, exists := flatEnv[key]; exists {
+			return value
+		}
+		return ""
+	})
+}
+
+func convertArrayMapToStringMap(arrayEnv map[string][]string) map[string]string {
+	stringEnv := make(map[string]string)
+	for key, values := range arrayEnv {
+		if len(values) > 0 {
+			// Use the first value for simple substitution
+			stringEnv[key] = values[0]
+		}
+	}
+	return stringEnv
+}

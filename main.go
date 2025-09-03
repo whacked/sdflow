@@ -189,58 +189,30 @@ func substituteWithContext(s string, context map[string]string) *string {
 	return &substituted
 }
 
-func renderCommand(task *RunnableTask, env map[string]string) string {
-
-	mapper := func(varName string) string {
-
-		// Handle $out
-		if varName == "out" && task.taskDeclaration.Out != nil {
-			return *task.taskDeclaration.Out
-		}
-
-		// Handle $in
-		if varName == "in" {
-			var paths []string
-			for _, input := range task.inputs {
-				paths = append(paths, input.path)
-			}
-			return strings.Join(paths, " ")
-		}
-
-		// Handle ${in[N]}
-		if strings.HasPrefix(varName, "in[") && strings.HasSuffix(varName, "]") {
-			idxStr := varName[3 : len(varName)-1]
-			if idx, err := strconv.Atoi(idxStr); err == nil {
-				if input := task.getInputByIndex(idx); input != nil {
-					return input.path
-				}
-			}
-			fmt.Fprintf(os.Stderr, "!!!! WARN no input found for index: %s\n", idxStr)
-		}
-
-		// Handle ${in.foo}
-		if strings.HasPrefix(varName, "in.") {
-			alias := varName[3:]
-			if input := task.getInputByAlias(alias); input != nil {
-				return input.path
-			}
-			fmt.Fprintf(os.Stderr, "!!!! WARN no input found for alias: %s\n", alias)
-		}
-
-		// check if the variable is in the environment
-		if envValue, ok := env[varName]; ok {
-			return envValue
-		}
-
-		// Fall back to environment variables
-		return os.Getenv(varName)
+func renderCommand(task *RunnableTask, env map[string][]string) string {
+	// Create a combined environment map that includes task-specific variables
+	combinedEnv := make(map[string][]string)
+	for k, v := range env {
+		combinedEnv[k] = v
 	}
-
+	
+	// Add task-specific variables
+	if task.taskDeclaration.Out != nil {
+		combinedEnv["out"] = []string{*task.taskDeclaration.Out}
+	}
+	
+	// Add input variables
+	var inPaths []string
+	for _, input := range task.inputs {
+		inPaths = append(inPaths, input.path)
+	}
+	combinedEnv["in"] = inPaths
+	
 	if task.taskDeclaration.Run != nil {
 		fmt.Printf("Run command: %s\n", *task.taskDeclaration.Run)
 	}
-
-	renderedCommand := os.Expand(*task.taskDeclaration.Run, mapper)
+	
+	renderedCommand := expandVariables(*task.taskDeclaration.Run, combinedEnv)
 	return renderedCommand
 }
 
@@ -550,7 +522,7 @@ func populateTaskModTimes(task *RunnableTask) {
 type ParsedFlowDefinition struct {
 	taskLookup       map[string]*RunnableTask
 	taskDependencies map[string][]string
-	executionEnv     map[string]string
+	executionEnv     map[string][]string
 }
 
 func createTaskFromRunnableKeyVals(
@@ -575,7 +547,7 @@ func createTaskFromRunnableKeyVals(
 				task.taskDeclaration.Out = &pathString
 			} else {
 				fileAbsPath := getPathRelativeToCwd(
-					*substituteWithContext(pathString, executionEnv))
+					*substituteWithContext(pathString, convertArrayMapToStringMap(executionEnv)))
 				task.taskDeclaration.Out = &fileAbsPath
 			}
 		}
@@ -589,7 +561,7 @@ func createTaskFromRunnableKeyVals(
 			var inputStrings []string
 			for _, inItem := range v {
 				inString := getPathRelativeToCwd(
-					*substituteWithContext(inItem.(string), executionEnv))
+					*substituteWithContext(inItem.(string), convertArrayMapToStringMap(executionEnv)))
 				inputStrings = append(inputStrings, fmt.Sprintf("\"%s\"", inString))
 				task.inputs = append(task.inputs, &RunnableTaskInput{
 					path:  inString,
@@ -603,7 +575,7 @@ func createTaskFromRunnableKeyVals(
 			var inputStrings []string
 			for alias, inItem := range v {
 				inString := getPathRelativeToCwd(
-					*substituteWithContext(inItem.(string), executionEnv))
+					*substituteWithContext(inItem.(string), convertArrayMapToStringMap(executionEnv)))
 				inputStrings = append(inputStrings, fmt.Sprintf("\"%s\"", inString))
 				task.inputs = append(task.inputs, &RunnableTaskInput{
 					path:  inString,
@@ -615,7 +587,7 @@ func createTaskFromRunnableKeyVals(
 		default:
 			// assume string
 			inString := getPathRelativeToCwd(
-				*substituteWithContext(inValue.(string), executionEnv))
+				*substituteWithContext(inValue.(string), convertArrayMapToStringMap(executionEnv)))
 			task.taskDeclaration.In = &inString
 			task.inputs = append(task.inputs, &RunnableTaskInput{
 				path: inString,
@@ -672,7 +644,7 @@ func parseFlowDefinitionSource(flowDefinitionSource string) *ParsedFlowDefinitio
 
 	taskLookup := make(map[string]*RunnableTask)
 	taskDependencies := make(map[string][]string)
-	executionEnv := getOsEnvironAsMap()
+	executionEnv := convertEnvironToArrayMap(getOsEnvironAsMap())
 
 	var flowDefinitionObject map[string]interface{}
 
@@ -687,7 +659,17 @@ func parseFlowDefinitionSource(flowDefinitionSource string) *ParsedFlowDefinitio
 
 		switch value.(type) {
 		case string: // variable definitions
-			executionEnv[targetIdentifier] = flowDefinitionObject[targetIdentifier].(string)
+			trace(fmt.Sprintf("Adding environment variable: %s=%s", targetIdentifier, flowDefinitionObject[targetIdentifier].(string)))
+			executionEnv[targetIdentifier] = []string{flowDefinitionObject[targetIdentifier].(string)}
+		case []interface{}: // array variable definitions
+			var stringArray []string
+			for _, item := range value.([]interface{}) {
+				if str, ok := item.(string); ok {
+					stringArray = append(stringArray, str)
+				}
+			}
+			trace(fmt.Sprintf("Adding array environment variable: %s=%v", targetIdentifier, stringArray))
+			executionEnv[targetIdentifier] = stringArray
 		}
 	}
 
@@ -706,11 +688,11 @@ func parseFlowDefinitionSource(flowDefinitionSource string) *ParsedFlowDefinitio
 	// second pass: retrieve tasks and substitute using executionEnv
 	for targetIdentifier, value := range flowDefinitionObject {
 
-		if executionEnv[targetIdentifier] != "" {
+		if _, exists := executionEnv[targetIdentifier]; exists {
 			// skip variable definitions
 			continue
 		}
-		substitutedTargetName := *substituteWithContext(targetIdentifier, executionEnv)
+		substitutedTargetName := *substituteWithContext(targetIdentifier, convertArrayMapToStringMap(executionEnv))
 
 		// ensure the target is in the dependency tracker
 		if _, ok := taskDependencies[substitutedTargetName]; !ok {
@@ -726,7 +708,7 @@ func parseFlowDefinitionSource(flowDefinitionSource string) *ParsedFlowDefinitio
 			for _, subTarget := range ruleContent {
 				taskDependencies[substitutedTargetName] = append(
 					taskDependencies[substitutedTargetName],
-					*substituteWithContext(subTarget.(string), executionEnv))
+					*substituteWithContext(subTarget.(string), convertArrayMapToStringMap(executionEnv)))
 			}
 			task := RunnableTask{
 				targetKey:  targetIdentifier,

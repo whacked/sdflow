@@ -3,6 +3,11 @@
 # global variables are any simple key-value pairs
 SCHEMAS_DIR: ./schemas
 GENERATORS_DIR: ./generators
+version_string: 0.0.1
+
+
+version:
+  run: echo "version ${version_string}"
 
 # if "out" is not specified
 # the entry key does not "look like" a file,

@@ -96,7 +96,7 @@ func TestRenderCommand(t *testing.T) {
 	tests := []struct {
 		name        string
 		runnable    map[string]interface{}
-		env         map[string]string
+		env         map[string][]string
 		wantCommand string
 	}{
 		{
@@ -106,7 +106,7 @@ func TestRenderCommand(t *testing.T) {
 				"out": "dst.txt",
 				"in":  "src.txt",
 			},
-			env:         map[string]string{},
+			env:         map[string][]string{},
 			wantCommand: "cp src.txt dst.txt",
 		},
 		{
@@ -115,7 +115,7 @@ func TestRenderCommand(t *testing.T) {
 				"run": "touch $out",
 				"out": "relative/dst.txt",
 			},
-			env:         map[string]string{},
+			env:         map[string][]string{},
 			wantCommand: "touch relative/dst.txt",
 		},
 		{
@@ -124,7 +124,7 @@ func TestRenderCommand(t *testing.T) {
 				"run": "touch $out",
 				"out": "/absolute/path/dst.txt",
 			},
-			env:         map[string]string{},
+			env:         map[string][]string{},
 			wantCommand: "touch /absolute/path/dst.txt",
 		},
 		{
@@ -134,16 +134,16 @@ func TestRenderCommand(t *testing.T) {
 				"out": "./bar/dst.txt",
 				"in":  stringSliceToInterface([]string{"src1.txt", "source two.text", "source-3.another.file"}),
 			},
-			env:         map[string]string{},
+			env:         map[string][]string{},
 			wantCommand: "cp src1.txt ./bar/dst.txt",
 		},
 		{
-			name: "variable substitution from env",
+			name: "variable substitution from env (string variable)",
 			runnable: map[string]interface{}{
 				"run": "echo 'version ${version_string}'",
 			},
-			env: map[string]string{
-				"version_string": "0.0.1",
+			env: map[string][]string{
+				"version_string": {"0.0.1"},
 			},
 			wantCommand: "echo 'version 0.0.1'",
 		},
@@ -152,18 +152,89 @@ func TestRenderCommand(t *testing.T) {
 			runnable: map[string]interface{}{
 				"run": "echo '${THING1} ${GENERATORS_DIR}'",
 			},
-			env: map[string]string{
-				"THING1":         "thing1",
-				"GENERATORS_DIR": "./generators",
+			env: map[string][]string{
+				"THING1":         {"thing1"},
+				"GENERATORS_DIR": {"./generators"},
 			},
 			wantCommand: "echo 'thing1 ./generators'",
+		},
+		{
+			name: "array variable substitution (first element)",
+			runnable: map[string]interface{}{
+				"run": "echo 'first: ${file_list[0]}'",
+			},
+			env: map[string][]string{
+				"file_list": {"file1.txt", "file2.txt", "file3.txt"},
+			},
+			wantCommand: "echo 'first: file1.txt'",
+		},
+		{
+			name: "array variable substitution (middle element)",
+			runnable: map[string]interface{}{
+				"run": "echo 'middle: ${file_list[1]}'",
+			},
+			env: map[string][]string{
+				"file_list": {"file1.txt", "file2.txt", "file3.txt"},
+			},
+			wantCommand: "echo 'middle: file2.txt'",
+		},
+		{
+			name: "array variable substitution (last element)",
+			runnable: map[string]interface{}{
+				"run": "echo 'last: ${file_list[2]}'",
+			},
+			env: map[string][]string{
+				"file_list": {"file1.txt", "file2.txt", "file3.txt"},
+			},
+			wantCommand: "echo 'last: file3.txt'",
+		},
+		{
+			name: "array variable substitution (full array)",
+			runnable: map[string]interface{}{
+				"run": "echo 'all files: ${file_list}'",
+			},
+			env: map[string][]string{
+				"file_list": {"file1.txt", "file2.txt", "file3.txt"},
+			},
+			wantCommand: "echo 'all files: file1.txt file2.txt file3.txt'",
+		},
+		{
+			name: "mixed string and array variables",
+			runnable: map[string]interface{}{
+				"run": "echo 'version ${version_string} processing ${file_list[0]} and ${file_list}'",
+			},
+			env: map[string][]string{
+				"version_string": {"0.0.1"},
+				"file_list":      {"file1.txt", "file2.txt", "file3.txt"},
+			},
+			wantCommand: "echo 'version 0.0.1 processing file1.txt and file1.txt file2.txt file3.txt'",
+		},
+		{
+			name: "array variable out-of-bounds access",
+			runnable: map[string]interface{}{
+				"run": "echo 'first: ${file_list[0]}, last: ${file_list[2]}, oob: ${file_list[99]}'",
+			},
+			env: map[string][]string{
+				"file_list": {"file1.txt", "file2.txt", "file3.txt"},
+			},
+			wantCommand: "echo 'first: file1.txt, last: file3.txt, oob: '",
+		},
+		{
+			name: "empty array variable handling",
+			runnable: map[string]interface{}{
+				"run": "echo 'empty: ${empty_list}, first: ${empty_list[0]}'",
+			},
+			env: map[string][]string{
+				"empty_list": {},
+			},
+			wantCommand: "echo 'empty: , first: '",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			task := createTaskFromRunnableKeyVals("FakeTarget", "fakeRenderedTarget", tt.runnable, tt.env)
-			got := renderCommand(task)
+			got := renderCommand(task, tt.env)
 			if got != tt.wantCommand {
 				t.Errorf("renderCommand() = %q, want %q", got, tt.wantCommand)
 			}
@@ -626,3 +697,136 @@ step3:
 	assertTaskDependencies(t, step3, []string{"step1", "step2"}) // includes transitive dependency step1
 }
 
+
+func TestArrayVariableExpansion(t *testing.T) {
+	yamlContent := `
+# Global variables
+version_string: 1.0.0
+schemas:
+  - file1.txt
+  - file2.txt
+  - file3.txt
+
+# Test array variable expansion
+test-array-basic:
+  run: 'echo "Version: ${version_string}, Files: ${schemas}"'
+
+test-array-indexed:
+  run: 'echo "First: ${schemas[0]}, Second: ${schemas[1]}, Third: ${schemas[2]}"'
+
+test-mixed-expansion:
+  run: 'echo "Version ${version_string} processing ${schemas[0]} and ${schemas}"'
+`
+
+	pfd := parseFlowDefinitionSource(yamlContent)
+
+	// Test that array variables are properly stored
+	if schemas, exists := pfd.executionEnv["schemas"]; exists {
+		expectedSchemas := []string{"file1.txt", "file2.txt", "file3.txt"}
+		if len(schemas) != len(expectedSchemas) {
+			t.Fatalf("Expected %d schema files, got %d", len(expectedSchemas), len(schemas))
+		}
+		for i, expected := range expectedSchemas {
+			if schemas[i] != expected {
+				t.Fatalf("Expected schema[%d] to be %s, got %s", i, expected, schemas[i])
+			}
+		}
+	} else {
+		t.Fatalf("schemas array variable not found in executionEnv")
+	}
+
+	// Test that string variables are stored as single-element arrays
+	if versionArray, exists := pfd.executionEnv["version_string"]; exists {
+		if len(versionArray) != 1 || versionArray[0] != "1.0.0" {
+			t.Fatalf("Expected version_string to be [\"1.0.0\"], got %v", versionArray)
+		}
+	} else {
+		t.Fatalf("version_string variable not found in executionEnv")
+	}
+
+	// Test command rendering with array variables
+	basicTask := pfd.taskLookup["test-array-basic"]
+	if basicTask == nil {
+		t.Fatalf("test-array-basic task not found")
+	}
+
+	renderedBasic := renderCommand(basicTask, pfd.executionEnv)
+	expectedBasic := "echo \"Version: 1.0.0, Files: file1.txt file2.txt file3.txt\""
+	if renderedBasic != expectedBasic {
+		t.Fatalf("Basic array expansion failed. Expected: %s, Got: %s", expectedBasic, renderedBasic)
+	}
+
+	// Test indexed access
+	indexedTask := pfd.taskLookup["test-array-indexed"]
+	if indexedTask == nil {
+		t.Fatalf("test-array-indexed task not found")
+	}
+
+	renderedIndexed := renderCommand(indexedTask, pfd.executionEnv)
+	expectedIndexed := "echo \"First: file1.txt, Second: file2.txt, Third: file3.txt\""
+	if renderedIndexed != expectedIndexed {
+		t.Fatalf("Indexed array expansion failed. Expected: %s, Got: %s", expectedIndexed, renderedIndexed)
+	}
+
+	// Test mixed expansion
+	mixedTask := pfd.taskLookup["test-mixed-expansion"]
+	if mixedTask == nil {
+		t.Fatalf("test-mixed-expansion task not found")
+	}
+
+	renderedMixed := renderCommand(mixedTask, pfd.executionEnv)
+	expectedMixed := "echo \"Version 1.0.0 processing file1.txt and file1.txt file2.txt file3.txt\""
+	if renderedMixed != expectedMixed {
+		t.Fatalf("Mixed array expansion failed. Expected: %s, Got: %s", expectedMixed, renderedMixed)
+	}
+}
+
+func TestBackwardsCompatibilityStringVariables(t *testing.T) {
+	yamlContent := `
+# Test backwards compatibility with string variables only
+BASE_PATH: /home/user
+PROJECT_NAME: myproject
+
+old-style-task:
+  in: ${BASE_PATH}/input.txt
+  out: ${BASE_PATH}/${PROJECT_NAME}.out
+  run: 'process ${in} > ${out}'
+`
+
+	pfd := parseFlowDefinitionSource(yamlContent)
+
+	// Verify string variables are stored as single-element arrays
+	if basePath, exists := pfd.executionEnv["BASE_PATH"]; exists {
+		if len(basePath) != 1 || basePath[0] != "/home/user" {
+			t.Fatalf("Expected BASE_PATH to be [\"/home/user\"], got %v", basePath)
+		}
+	} else {
+		t.Fatalf("BASE_PATH variable not found")
+	}
+
+	// Test that old-style variable expansion still works
+	task := pfd.taskLookup["old-style-task"]
+	if task == nil {
+		t.Fatalf("old-style-task not found")
+	}
+
+	rendered := renderCommand(task, pfd.executionEnv)
+	// Note: paths get converted to relative by getPathRelativeToCwd
+	expectedPrefix := "process "
+	expectedSuffix := "input.txt > "
+	expectedEnd := "myproject.out"
+	if !strings.HasPrefix(rendered, expectedPrefix) ||
+		!strings.Contains(rendered, expectedSuffix) ||
+		!strings.HasSuffix(rendered, expectedEnd) {
+		t.Fatalf("Backwards compatibility failed. Expected format: %s*%s*%s, Got: %s", expectedPrefix, expectedSuffix, expectedEnd, rendered)
+	}
+
+	// Verify input and output paths were properly processed
+	if task.taskDeclaration.Out == nil {
+		t.Fatalf("Output path not set")
+	}
+	// Output path will be converted to relative by getPathRelativeToCwd
+	if !strings.HasSuffix(*task.taskDeclaration.Out, "myproject.out") {
+		t.Fatalf("Expected output path to end with 'myproject.out', got %s", *task.taskDeclaration.Out)
+	}
+}
