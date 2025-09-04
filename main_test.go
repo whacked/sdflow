@@ -397,6 +397,60 @@ myTarget:
 	}
 }
 
+func getExecutionCounts(tasks map[string]*RunnableTask) map[string]int {
+	counts := make(map[string]int)
+	for name, task := range tasks {
+		counts[name] = task.executionCount
+	}
+	return counts
+}
+
+func assertExecutionCounts(t *testing.T, tasks map[string]*RunnableTask, expected map[string]int) {
+	actual := getExecutionCounts(tasks)
+	for name, expectedCount := range expected {
+		if actualCount, exists := actual[name]; !exists {
+			t.Fatalf("task %s not found in actual execution counts", name)
+		} else if actualCount != expectedCount {
+			t.Fatalf("task %s: expected %d executions, got %d", name, expectedCount, actualCount)
+		}
+	}
+}
+
+func assertTaskDependencies(t *testing.T, task *RunnableTask, expectedDeps []string) {
+	actualDeps := make([]string, len(task.taskDependencies))
+	for i, dep := range task.taskDependencies {
+		actualDeps[i] = dep.targetName
+	}
+
+	if len(actualDeps) != len(expectedDeps) {
+		t.Fatalf("task %s: expected %d dependencies, got %d. Expected: %v, Got: %v",
+			task.targetName, len(expectedDeps), len(actualDeps), expectedDeps, actualDeps)
+	}
+
+	// Convert to map for easier comparison (order doesn't matter)
+	expectedMap := make(map[string]bool)
+	for _, dep := range expectedDeps {
+		expectedMap[dep] = true
+	}
+
+	for _, dep := range actualDeps {
+		if !expectedMap[dep] {
+			t.Fatalf("task %s: unexpected dependency %s. Expected: %v, Got: %v",
+				task.targetName, dep, expectedDeps, actualDeps)
+		}
+		delete(expectedMap, dep)
+	}
+
+	if len(expectedMap) > 0 {
+		missing := make([]string, 0, len(expectedMap))
+		for dep := range expectedMap {
+			missing = append(missing, dep)
+		}
+		t.Fatalf("task %s: missing dependencies %v. Expected: %v, Got: %v",
+			task.targetName, missing, expectedDeps, actualDeps)
+	}
+}
+
 func TestParseFlowDefinitionFileInputSha256Syntax(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -1054,7 +1108,7 @@ func TestRealExecutorConfiguration(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			executor := NewRealExecutor(tt.updateSha256, tt.forceRun)
-			
+
 			if executor.ShouldUpdateSha256() != tt.updateSha256 {
 				t.Errorf("ShouldUpdateSha256() = %v, want %v", executor.ShouldUpdateSha256(), tt.updateSha256)
 			}
@@ -1080,7 +1134,7 @@ func TestDryRunExecutorConfiguration(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			executor := NewDryRunExecutor(tt.updateSha256, tt.forceRun)
-			
+
 			if executor.ShouldUpdateSha256() != tt.updateSha256 {
 				t.Errorf("ShouldUpdateSha256() = %v, want %v", executor.ShouldUpdateSha256(), tt.updateSha256)
 			}
@@ -1102,27 +1156,21 @@ func TestExecutorCommandExecution(t *testing.T) {
 
 	t.Run("RealExecutor command execution", func(t *testing.T) {
 		executor := NewRealExecutor(false, false)
-		
-		// Test that ExecuteCommand is called (should fail with "not implemented" for now)
+
+		// Test that ExecuteCommand works for real commands
 		err := executor.ExecuteCommand(task, "echo 'hello world'", []string{})
-		if err == nil {
-			t.Errorf("Expected 'not implemented' error, got nil")
-		}
-		if !strings.Contains(err.Error(), "not implemented") {
-			t.Errorf("Expected 'not implemented' error, got %v", err)
+		if err != nil {
+			t.Errorf("Expected successful command execution, got %v", err)
 		}
 	})
 
 	t.Run("DryRunExecutor command execution", func(t *testing.T) {
 		executor := NewDryRunExecutor(false, false)
-		
-		// Test that ExecuteCommand is called (should fail with "not implemented" for now)
+
+		// Test that ExecuteCommand works for dry run (should not error)
 		err := executor.ExecuteCommand(task, "echo 'hello world'", []string{})
-		if err == nil {
-			t.Errorf("Expected 'not implemented' error, got nil")
-		}
-		if !strings.Contains(err.Error(), "not implemented") {
-			t.Errorf("Expected 'not implemented' error, got %v", err)
+		if err != nil {
+			t.Errorf("Expected successful dry run command simulation, got %v", err)
 		}
 	})
 }
@@ -1134,21 +1182,33 @@ func TestExecutorDownloadHandling(t *testing.T) {
 		output   string
 		executor Executor
 	}{
-		{"RealExecutor HTTP download", "https://example.com/file.txt", "/tmp/file.txt", NewRealExecutor(false, false)},
-		{"RealExecutor S3 download", "s3://bucket/file.txt", "/tmp/file.txt", NewRealExecutor(false, false)},
-		{"DryRunExecutor HTTP download", "https://example.com/file.txt", "/tmp/file.txt", NewDryRunExecutor(false, false)},
-		{"DryRunExecutor S3 download", "s3://bucket/file.txt", "/tmp/file.txt", NewDryRunExecutor(false, false)},
+		{"RealExecutor HTTP download", "https://nonexistent.fake.domain.invalid/file.txt", "/tmp/file.txt", NewRealExecutor(false, false)},
+		{"RealExecutor S3 download", "s3://nonexistent-bucket-fake-invalid/file.txt", "/tmp/file.txt", NewRealExecutor(false, false)},
+		{"DryRunExecutor HTTP download", "https://nonexistent.fake.domain.invalid/file.txt", "/tmp/file.txt", NewDryRunExecutor(false, false)},
+		{"DryRunExecutor S3 download", "s3://nonexistent-bucket-fake-invalid/file.txt", "/tmp/file.txt", NewDryRunExecutor(false, false)},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Test that DownloadFile is called (should fail with "not implemented" for now)
+			// Test that DownloadFile is called appropriately for each executor type
 			err := tt.executor.DownloadFile(tt.url, tt.output)
-			if err == nil {
-				t.Errorf("Expected 'not implemented' error, got nil")
-			}
-			if !strings.Contains(err.Error(), "not implemented") {
-				t.Errorf("Expected 'not implemented' error, got %v", err)
+
+			switch tt.executor.(type) {
+			case *RealExecutor:
+				// Real executor behavior depends on URL type and available tools
+				// HTTP URLs with nonexistent domains should fail
+				// S3 URLs without credentials may return nil (no error, but no action)
+				if strings.HasPrefix(tt.url, "http") {
+					if err == nil {
+						t.Errorf("Expected network error for RealExecutor with fake HTTP URL, got nil")
+					}
+				}
+				// For S3 URLs, we accept either error or nil depending on credential availability
+			case *DryRunExecutor:
+				// Dry run executor should simulate successfully
+				if err != nil {
+					t.Errorf("Expected successful simulation for DryRunExecutor, got %v", err)
+				}
 			}
 		})
 	}
@@ -1175,7 +1235,7 @@ func TestExecutorTaskOutputMethods(t *testing.T) {
 			// These should not panic, even though they're not implemented
 			tt.executor.ShowTaskStart(task)
 			tt.executor.ShowTaskSkip(task, "up-to-date")
-			tt.executor.ShowTaskComplete(task)
+			tt.executor.ShowTaskCompleted(task)
 		})
 	}
 }
@@ -1193,19 +1253,37 @@ simple-task:
 	}
 
 	t.Run("runTask with RealExecutor", func(t *testing.T) {
-		_ = NewRealExecutor(false, false) // Will be used once integration is implemented
-		
-		// This should fail compilation once we change the signature
-		// runTaskWithExecutor(task, pfd.executionEnv, executor)
-		t.Skip("Skipping until runTask signature is updated to accept executor")
+		executor := NewRealExecutor(false, false)
+
+		// This should work now that runTask accepts an executor
+		runTask(task, pfd.executionEnv, executor)
+
+		// Verify task was executed
+		if task.executionState != TaskCompleted {
+			t.Errorf("Expected task to be completed, got %v", task.executionState)
+		}
+		if task.executionCount != 1 {
+			t.Errorf("Expected task execution count to be 1, got %d", task.executionCount)
+		}
 	})
 
 	t.Run("runTask with DryRunExecutor", func(t *testing.T) {
-		_ = NewDryRunExecutor(false, false) // Will be used once integration is implemented
-		
-		// This should fail compilation once we change the signature
-		// runTaskWithExecutor(task, pfd.executionEnv, executor)
-		t.Skip("Skipping until runTask signature is updated to accept executor")
+		// Reset task state for dry run test
+		task.executionState = TaskNotStarted
+		task.executionCount = 0
+
+		executor := NewDryRunExecutor(false, false)
+
+		// This should work now that runTask accepts an executor
+		runTask(task, pfd.executionEnv, executor)
+
+		// Verify task was "executed" in dry run mode
+		if task.executionState != TaskCompleted {
+			t.Errorf("Expected task to be completed in dry run, got %v", task.executionState)
+		}
+		if task.executionCount != 1 {
+			t.Errorf("Expected task execution count to be 1 in dry run, got %d", task.executionCount)
+		}
 	})
 }
 
@@ -1213,12 +1291,12 @@ simple-task:
 func TestExecutorSideEffectHandling(t *testing.T) {
 	// Test that SHA256 computation always happens (not a side effect)
 	// but downloads are controlled by executor type
-	
+
 	t.Run("SHA256 computation is not affected by executor type", func(t *testing.T) {
 		// Both executors should allow SHA256 computation since it's not a side effect
 		realExec := NewRealExecutor(true, false)
 		dryExec := NewDryRunExecutor(true, false)
-		
+
 		// SHA256 computation behavior should be the same for both
 		if realExec.ShouldUpdateSha256() != dryExec.ShouldUpdateSha256() {
 			t.Errorf("SHA256 computation behavior should be consistent across executor types")
@@ -1228,18 +1306,19 @@ func TestExecutorSideEffectHandling(t *testing.T) {
 	t.Run("Download behavior differs by executor type", func(t *testing.T) {
 		realExec := NewRealExecutor(false, false)
 		dryExec := NewDryRunExecutor(false, false)
-		
-		// Test download behavior - both should currently return "not implemented"
-		// but in the future, real should actually download, dry should simulate
-		realErr := realExec.DownloadFile("https://example.com/test.txt", "/tmp/test.txt")
-		dryErr := dryExec.DownloadFile("https://example.com/test.txt", "/tmp/test.txt")
-		
-		// For now, both should fail with "not implemented"
-		if !strings.Contains(realErr.Error(), "not implemented") {
-			t.Errorf("RealExecutor should return 'not implemented' error")
+
+		// Test download behavior - real will try to download, dry will simulate
+		// Note: Real download will likely fail since we're using a bad URL, but that's expected
+		realErr := realExec.DownloadFile("https://nonexistent.fake.domain.invalid/test.txt", "/tmp/test.txt")
+		dryErr := dryExec.DownloadFile("https://nonexistent.fake.domain.invalid/test.txt", "/tmp/test.txt")
+
+		// Real executor should return an error (from failed download)
+		// Dry executor should succeed (simulation only)
+		if realErr == nil {
+			t.Errorf("RealExecutor should return an error for failed download")
 		}
-		if !strings.Contains(dryErr.Error(), "not implemented") {
-			t.Errorf("DryRunExecutor should return 'not implemented' error")
+		if dryErr != nil {
+			t.Errorf("DryRunExecutor should succeed for simulated download, got %v", dryErr)
 		}
 	})
 }
@@ -1247,7 +1326,7 @@ func TestExecutorSideEffectHandling(t *testing.T) {
 // Test execution flow integration
 func TestExecutorIntegrationFlow(t *testing.T) {
 	tmp := t.TempDir()
-	
+
 	yamlContent := `
 download-task:
   in: https://example.com/input.txt
@@ -1259,26 +1338,29 @@ compute-task:
   out: result.txt
   run: wc -l $in > $out
 `
-	
+
 	flowPath := filepath.Join(tmp, "Sdflow.yaml")
 	if err := os.WriteFile(flowPath, []byte(yamlContent), 0644); err != nil {
 		t.Fatalf("write flow file: %v", err)
 	}
 
 	t.Run("full flow with RealExecutor", func(t *testing.T) {
-		_ = NewRealExecutor(false, false) // Will be used once integration is implemented
-		
-		// This should fail compilation once we change the signature
-		// runFlowDefinitionProcessorWithExecutor(flowPath, executor)
-		t.Skip("Skipping until runFlowDefinitionProcessor signature is updated to accept executor")
+		executor := NewRealExecutor(false, false)
+
+		// This should work now that runFlowDefinitionProcessor accepts an executor
+		runFlowDefinitionProcessor(flowPath, executor)
+
+		// Note: This test will actually try to download and execute commands
+		// In a real test environment, we might want to mock the network calls
 	})
 
 	t.Run("full flow with DryRunExecutor", func(t *testing.T) {
-		_ = NewDryRunExecutor(false, false) // Will be used once integration is implemented
-		
-		// This should fail compilation once we change the signature
-		// runFlowDefinitionProcessorWithExecutor(flowPath, executor)
-		t.Skip("Skipping until runFlowDefinitionProcessor signature is updated to accept executor")
+		executor := NewDryRunExecutor(false, false)
+
+		// This should work and show execution plan without side effects
+		runFlowDefinitionProcessor(flowPath, executor)
+
+		// Dry run should complete without errors and without actual file operations
 	})
 }
 

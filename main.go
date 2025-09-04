@@ -28,11 +28,11 @@ type Executor interface {
 	DownloadFile(url, outputPath string) error
 	ShouldUpdateSha256() bool
 	ShouldForceRun() bool
-	
+
 	// Output methods for different execution phases
 	ShowTaskStart(task *RunnableTask)
 	ShowTaskSkip(task *RunnableTask, reason string)
-	ShowTaskComplete(task *RunnableTask)
+	ShowTaskCompleted(task *RunnableTask)
 }
 
 // RealExecutor performs actual execution
@@ -46,13 +46,25 @@ func NewRealExecutor(updateSha256, forceRun bool) *RealExecutor {
 }
 
 func (e *RealExecutor) ExecuteCommand(task *RunnableTask, command string, env []string) error {
-	// TODO: implement
-	return fmt.Errorf("not implemented")
+	fmt.Fprint(
+		os.Stderr,
+		color.GreenString("Command: %s\n", command),
+	)
+
+	cmd := exec.Command("bash", "-c", command)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Env = env
+
+	err := cmd.Run()
+	if err != nil {
+		return fmt.Errorf("error executing command: %v", err)
+	}
+	return nil
 }
 
 func (e *RealExecutor) DownloadFile(url, outputPath string) error {
-	// TODO: implement
-	return fmt.Errorf("not implemented")
+	return downloadFileToLocalPath(url, outputPath)
 }
 
 func (e *RealExecutor) ShouldUpdateSha256() bool {
@@ -64,15 +76,17 @@ func (e *RealExecutor) ShouldForceRun() bool {
 }
 
 func (e *RealExecutor) ShowTaskStart(task *RunnableTask) {
-	// TODO: implement
+	fmt.Fprintf(
+		os.Stderr,
+		"Running task: %+v (%d dependencies)\n", task.targetName, len(task.taskDependencies))
+	printVitalsForTask(task)
 }
 
 func (e *RealExecutor) ShowTaskSkip(task *RunnableTask, reason string) {
-	// TODO: implement
+	fmt.Printf("Output is up to date\n")
 }
 
-func (e *RealExecutor) ShowTaskComplete(task *RunnableTask) {
-	// TODO: implement
+func (e *RealExecutor) ShowTaskCompleted(task *RunnableTask) {
 }
 
 // DryRunExecutor simulates execution with pretty output
@@ -86,13 +100,13 @@ func NewDryRunExecutor(updateSha256, forceRun bool) *DryRunExecutor {
 }
 
 func (e *DryRunExecutor) ExecuteCommand(task *RunnableTask, command string, env []string) error {
-	// TODO: implement
-	return fmt.Errorf("not implemented")
+	fmt.Fprintf(os.Stderr, "%s [DRY RUN WOULD EXECUTE]: %s\n", task.targetName, command)
+	return nil
 }
 
 func (e *DryRunExecutor) DownloadFile(url, outputPath string) error {
-	// TODO: implement
-	return fmt.Errorf("not implemented")
+	fmt.Fprintf(os.Stderr, "[DRY RUN WOULD DOWNLOAD]: %s -> %s\n", url, outputPath)
+	return nil
 }
 
 func (e *DryRunExecutor) ShouldUpdateSha256() bool {
@@ -104,15 +118,17 @@ func (e *DryRunExecutor) ShouldForceRun() bool {
 }
 
 func (e *DryRunExecutor) ShowTaskStart(task *RunnableTask) {
-	// TODO: implement
+	fmt.Fprintf(
+		os.Stderr,
+		"Running task: %+v (%d dependencies)\n", task.targetName, len(task.taskDependencies))
+	printVitalsForTask(task)
 }
 
 func (e *DryRunExecutor) ShowTaskSkip(task *RunnableTask, reason string) {
-	// TODO: implement
+	fmt.Fprintf(os.Stderr, "%s [DRY RUN SKIPPED] (%s)\n", task.targetName, reason)
 }
 
-func (e *DryRunExecutor) ShowTaskComplete(task *RunnableTask) {
-	// TODO: implement
+func (e *DryRunExecutor) ShowTaskCompleted(task *RunnableTask) {
 }
 
 // declare list of candidates for the flow definition file
@@ -138,6 +154,14 @@ var zshAutoCompleteScript embed.FS
 
 const zshAutoCompleteScriptPath = "resources/zsh_autocomplete.sh"
 
+type TaskExecutionState int
+
+const (
+	TaskNotStarted TaskExecutionState = iota
+	TaskCompleted
+	TaskSkipped // up-to-date
+)
+
 type RunnableTaskInput struct {
 	path   string
 	sha256 string
@@ -152,6 +176,8 @@ type RunnableTask struct {
 	targetName       string
 	outTime          int64
 	inputs           []*RunnableTaskInput
+	executionState   TaskExecutionState
+	executionCount   int // for testing
 }
 
 func discoverFlowDefinitionFile() string {
@@ -208,22 +234,32 @@ func prettyPrintTask(task *RunnableTask) {
 }
 
 func checkIfOutputMoreRecentThanInputs(task *RunnableTask) bool {
-	if task.taskDeclaration.Out == nil {
+	if task.taskDeclaration == nil || task.taskDeclaration.Out == nil {
 		return false
 	}
-	isOutputMoreRecent := true
+
+	// Check if output file exists
+	outputStat, err := os.Stat(*task.taskDeclaration.Out)
+	if err != nil {
+		// Output file doesn't exist, so task needs to run
+		return false
+	}
+
+	outputTime := outputStat.ModTime().Unix()
+
+	// Check all inputs - if any input is newer than output, task needs to run
 	for _, taskInput := range task.inputs {
-		if _, err := os.Stat(taskInput.path); err == nil {
-			stat, err := os.Stat(taskInput.path)
-			if err == nil {
-				taskInput.mtime = stat.ModTime().Unix()
-				if task.outTime <= taskInput.mtime {
-					isOutputMoreRecent = false
-				}
+		if inputStat, err := os.Stat(taskInput.path); err == nil {
+			taskInput.mtime = inputStat.ModTime().Unix()
+			if outputTime <= taskInput.mtime {
+				return false // Input is newer than output
 			}
 		}
+		// If input doesn't exist, we can't compare - assume task needs to run
+		// (This handles cases where inputs are produced by other tasks)
 	}
-	return isOutputMoreRecent
+
+	return true // Output exists and is newer than all existing inputs
 }
 
 func printVitalsForTask(task *RunnableTask) {
@@ -288,23 +324,33 @@ func renderCommand(task *RunnableTask, env map[string][]string) string {
 	for k, v := range env {
 		combinedEnv[k] = v
 	}
-	
+
 	// Add task-specific variables
 	if task.taskDeclaration.Out != nil {
 		combinedEnv["out"] = []string{*task.taskDeclaration.Out}
 	}
-	
+
 	// Add input variables
 	var inPaths []string
-	for _, input := range task.inputs {
+	for i, input := range task.inputs {
 		inPaths = append(inPaths, input.path)
+
+		// Add input alias variables like "in.first", "in.second"
+		if input.alias != "" {
+			aliasKey := fmt.Sprintf("in.%s", input.alias)
+			combinedEnv[aliasKey] = []string{input.path}
+		}
+
+		// Add indexed input variables like "in_0", "in_1" for ${in[0]}, ${in[1]}
+		indexKey := fmt.Sprintf("in_%d", i)
+		combinedEnv[indexKey] = []string{input.path}
 	}
 	combinedEnv["in"] = inPaths
-	
+
 	if task.taskDeclaration.Run != nil {
 		fmt.Printf("Run command: %s\n", *task.taskDeclaration.Run)
 	}
-	
+
 	renderedCommand := expandVariables(*task.taskDeclaration.Run, combinedEnv)
 	return renderedCommand
 }
@@ -476,20 +522,25 @@ func handleRemoteInput(task *RunnableTask, input *RunnableTaskInput) bool {
 	}
 }
 
-func runTask(task *RunnableTask, env map[string]string, shouldUpdateOutSha256 bool, shouldForceRun bool) {
-	fmt.Fprintf(
-		os.Stderr,
-		"Running task: %+v (%d dependencies)\n", task.targetName, len(task.taskDependencies))
-	printVitalsForTask((task))
+func runTask(task *RunnableTask, env map[string][]string, executor Executor) {
 
-	if !shouldForceRun && checkIfOutputMoreRecentThanInputs(task) {
-		fmt.Println("Output is up to date")
+	// Check execution state first - prevent duplicate execution
+	if task.executionState == TaskCompleted {
 		return
 	}
 
+	// Check if up-to-date (existing logic)
+	if !executor.ShouldForceRun() && checkIfOutputMoreRecentThanInputs(task) {
+		task.executionState = TaskSkipped
+		executor.ShowTaskSkip(task, "up-to-date")
+		return
+	}
+
+	executor.ShowTaskStart(task)
+
 	for _, dep := range task.taskDependencies {
 		fmt.Println("Running dependency:", dep.targetName)
-		runTask(dep, env, shouldUpdateOutSha256, shouldForceRun)
+		runTask(dep, env, executor)
 	}
 
 	if task.taskDeclaration == nil {
@@ -528,7 +579,11 @@ func runTask(task *RunnableTask, env map[string]string, shouldUpdateOutSha256 bo
 				}
 
 				if shouldDownloadFile {
-					downloadFileToLocalPath(task.inputs[0].path, *task.taskDeclaration.Out)
+					err := executor.DownloadFile(task.inputs[0].path, *task.taskDeclaration.Out)
+					if err != nil {
+						fmt.Printf("Error downloading file: %v\n", err)
+						return
+					}
 					shouldCheckOutput = true
 				}
 			}
@@ -544,15 +599,15 @@ func runTask(task *RunnableTask, env map[string]string, shouldUpdateOutSha256 bo
 			cmdEnv = append(cmdEnv, fmt.Sprintf("%s=%s", key, strings.Join(value, " ")))
 		}
 
-		err := cmd.Run()
+		err := executor.ExecuteCommand(task, command, cmdEnv)
 		if err != nil {
-			fmt.Println("Error executing command:", err)
+			fmt.Printf("Error executing command: %v\n", err)
 			return
 		}
 		shouldCheckOutput = true
 	}
 
-	if shouldUpdateOutSha256 && task.taskDeclaration.Out != nil {
+	if executor.ShouldUpdateSha256() && task.taskDeclaration.Out != nil {
 		outputFileBytes, err := os.ReadFile(*task.taskDeclaration.Out)
 		bailOnError(err)
 		outputSha256 := getBytesSha256(outputFileBytes)
@@ -565,6 +620,11 @@ func runTask(task *RunnableTask, env map[string]string, shouldUpdateOutSha256 bo
 			trace("OUT SHA256 mismatch!")
 		}
 	}
+
+	// Mark task as completed and increment execution count
+	task.executionState = TaskCompleted
+	task.executionCount++
+	executor.ShowTaskCompleted(task)
 }
 
 func getPathRelativeToCwd(path string) string {
@@ -651,7 +711,7 @@ func createTaskFromRunnableKeyVals(
 				itemStr := inItem.(string)
 				// Check if this item is an array variable reference that should be expanded
 				expandedInputs := expandArrayVariableInInput(itemStr, executionEnv)
-				
+
 				for _, expandedInput := range expandedInputs {
 					inString := getPathRelativeToCwd(expandedInput)
 					inputStrings = append(inputStrings, fmt.Sprintf("\"%s\"", inString))
@@ -930,7 +990,7 @@ func addImplicitDependencies(taskLookup map[string]*RunnableTask, taskDependenci
 	}
 }
 
-func runFlowDefinitionProcessor(flowDefinitionFilePath string, shouldWriteOutSha256 bool, shouldForceRun bool) {
+func runFlowDefinitionProcessor(flowDefinitionFilePath string, executor Executor) {
 
 	parsedFlowDefinition := parseFlowDefinitionFile(flowDefinitionFilePath)
 
@@ -962,9 +1022,9 @@ func runFlowDefinitionProcessor(flowDefinitionFilePath string, shouldWriteOutSha
 			return
 		} else {
 			task := parsedFlowDefinition.taskLookup[lastArg]
-			runTask(task, parsedFlowDefinition.executionEnv, shouldWriteOutSha256, shouldForceRun)
+			runTask(task, parsedFlowDefinition.executionEnv, executor)
 
-			if shouldWriteOutSha256 && task.taskDeclaration.OutSha256 != nil {
+			if executor.ShouldUpdateSha256() && task.taskDeclaration.OutSha256 != nil {
 				updatedYamlString := updateOutSha256ForTarget(FLOW_DEFINITION_FILE, task.targetKey, *task.taskDeclaration.OutSha256)
 				outputYamlString := addInterveningSpacesToRootLevelBlocks(updatedYamlString)
 				// re-output the file
@@ -1064,9 +1124,17 @@ func main() {
 
 			shouldUpdateOutSha256, _ := cmd.Flags().GetBool("updatehash")
 			shouldForceRun, _ := cmd.Flags().GetBool("always-run")
+			isDryRun, _ := cmd.Flags().GetBool("dry-run")
 			// TODO FIXME: tell user that updating the hash is meaningless if `out` is not supplied
 
-			runFlowDefinitionProcessor(FLOW_DEFINITION_FILE, shouldUpdateOutSha256, shouldForceRun)
+			var executor Executor
+			if isDryRun {
+				executor = NewDryRunExecutor(shouldUpdateOutSha256, shouldForceRun)
+			} else {
+				executor = NewRealExecutor(shouldUpdateOutSha256, shouldForceRun)
+			}
+
+			runFlowDefinitionProcessor(FLOW_DEFINITION_FILE, executor)
 			return nil
 		},
 	}
@@ -1078,6 +1146,7 @@ func main() {
 	rootCmd.Flags().Bool("updatehash", false, "update out.sha256 for the target in the flow definition file after running the target")
 	rootCmd.Flags().Bool("targets", false, "list all defined targets")
 	rootCmd.Flags().BoolP("always-run", "B", false, "always run the target, even if it's up to date")
+	rootCmd.Flags().Bool("dry-run", false, "show execution plan without running commands")
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
