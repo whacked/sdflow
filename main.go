@@ -2,7 +2,11 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"os"
@@ -33,16 +37,29 @@ type Executor interface {
 	ShowTaskStart(task *RunnableTask)
 	ShowTaskSkip(task *RunnableTask, reason string)
 	ShowTaskCompleted(task *RunnableTask)
+
+	// CAS integration
+	GetCASStore() CASStore
+	GetTaskMetadataStore() TaskMetadataStore
 }
 
 // RealExecutor performs actual execution
 type RealExecutor struct {
-	updateSha256 bool
-	forceRun     bool
+	updateSha256      bool
+	forceRun          bool
+	casStore          CASStore
+	taskMetadataStore TaskMetadataStore
 }
 
 func NewRealExecutor(updateSha256, forceRun bool) *RealExecutor {
-	return &RealExecutor{updateSha256: updateSha256, forceRun: forceRun}
+	casStore := NewFilesystemCASStore(CACHE_DIRECTORY)
+	taskMetadataStore := NewFilesystemTaskMetadataStore(CACHE_DIRECTORY)
+	return &RealExecutor{
+		updateSha256:      updateSha256,
+		forceRun:          forceRun,
+		casStore:          casStore,
+		taskMetadataStore: taskMetadataStore,
+	}
 }
 
 func (e *RealExecutor) ExecuteCommand(task *RunnableTask, command string, env []string) error {
@@ -52,14 +69,109 @@ func (e *RealExecutor) ExecuteCommand(task *RunnableTask, command string, env []
 	)
 
 	cmd := exec.Command("bash", "-c", command)
-	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Env = env
 
-	err := cmd.Run()
-	if err != nil {
-		return fmt.Errorf("error executing command: %v", err)
+	// Check if we should capture stdout to CAS (no out: field and updateSha256 enabled)
+	shouldCaptureToCAS := task.taskDeclaration.Out == nil && e.updateSha256
+
+	if shouldCaptureToCAS {
+		// Capture stdout to CAS
+		return e.executeWithCASCapture(task, cmd, command, env)
+	} else {
+		// Normal execution - stdout goes to terminal
+		cmd.Stdout = os.Stdout
+		err := cmd.Run()
+		if err != nil {
+			return fmt.Errorf("error executing command: %v", err)
+		}
+		return nil
 	}
+}
+
+func (e *RealExecutor) executeWithCASCapture(task *RunnableTask, cmd *exec.Cmd, command string, env []string) error {
+	// Compute action digest
+	inputDigests := make(map[string]ContentDigest)
+	for _, input := range task.inputs {
+		if input.sha256 != "" {
+			inputDigests[input.path] = ContentDigest(input.sha256)
+		}
+	}
+	
+	envMap := make(map[string]string)
+	for _, envVar := range env {
+		if parts := strings.SplitN(envVar, "=", 2); len(parts) == 2 {
+			envMap[parts[0]] = parts[1]
+		}
+	}
+	
+	actionDigest := computeActionDigest(task.targetName, command, inputDigests, envMap)
+	
+	// Create temp file
+	tempPath, err := e.casStore.CreateTempFile(actionDigest)
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %v", err)
+	}
+	
+	tempFile, err := os.Create(tempPath)
+	if err != nil {
+		return fmt.Errorf("failed to open temp file: %v", err)
+	}
+	defer tempFile.Close()
+	
+	// Create hash writer
+	hasher := sha256.New()
+	
+	// Use MultiWriter to write to both temp file and display stdout
+	multiWriter := io.MultiWriter(tempFile, hasher, os.Stdout)
+	cmd.Stdout = multiWriter
+	
+	// Execute command
+	err = cmd.Run()
+	exitCode := 0
+	if err != nil {
+		if exitError, ok := err.(*exec.ExitError); ok {
+			exitCode = exitError.ExitCode()
+		} else {
+			os.Remove(tempPath)
+			return fmt.Errorf("error executing command: %v", err)
+		}
+	}
+	
+	// Close temp file before finalizing
+	tempFile.Close()
+	
+	if exitCode != 0 {
+		// Command failed - remove temp file and return error
+		os.Remove(tempPath)
+		return fmt.Errorf("command exited with code %d", exitCode)
+	}
+	
+	// Finalize temp file to CAS
+	contentDigest, err := e.casStore.FinalizeTempFile(tempPath)
+	if err != nil {
+		os.Remove(tempPath)
+		return fmt.Errorf("failed to finalize to CAS: %v", err)
+	}
+	
+	// Store task metadata
+	metadata := &TaskMetadata{
+		ActionDigest:  actionDigest,
+		InputDigests:  inputDigests,
+		OutputDigests: map[string]ContentDigest{"stdout": contentDigest},
+		EnvVars:       envMap,
+		ExitCode:      exitCode,
+		Timestamp:     time.Now(),
+		ToolchainHash: TOOLCHAIN_FINGERPRINT,
+	}
+	
+	if err := e.taskMetadataStore.Store(actionDigest, metadata); err != nil {
+		return fmt.Errorf("failed to store task metadata: %v", err)
+	}
+	
+	// Store the content digest in the task for later use
+	task.casStdoutDigest = contentDigest
+	
 	return nil
 }
 
@@ -88,14 +200,31 @@ func (e *RealExecutor) ShowTaskSkip(task *RunnableTask, reason string) {
 func (e *RealExecutor) ShowTaskCompleted(task *RunnableTask) {
 }
 
+func (e *RealExecutor) GetCASStore() CASStore {
+	return e.casStore
+}
+
+func (e *RealExecutor) GetTaskMetadataStore() TaskMetadataStore {
+	return e.taskMetadataStore
+}
+
 // DryRunExecutor simulates execution with pretty output
 type DryRunExecutor struct {
-	updateSha256 bool
-	forceRun     bool
+	updateSha256      bool
+	forceRun          bool
+	casStore          CASStore
+	taskMetadataStore TaskMetadataStore
 }
 
 func NewDryRunExecutor(updateSha256, forceRun bool) *DryRunExecutor {
-	return &DryRunExecutor{updateSha256: updateSha256, forceRun: forceRun}
+	casStore := NewFilesystemCASStore(CACHE_DIRECTORY)
+	taskMetadataStore := NewFilesystemTaskMetadataStore(CACHE_DIRECTORY)
+	return &DryRunExecutor{
+		updateSha256:      updateSha256,
+		forceRun:          forceRun,
+		casStore:          casStore,
+		taskMetadataStore: taskMetadataStore,
+	}
 }
 
 func tagDryRun(message string) string {
@@ -132,6 +261,304 @@ func (e *DryRunExecutor) ShowTaskSkip(task *RunnableTask, reason string) {
 }
 
 func (e *DryRunExecutor) ShowTaskCompleted(task *RunnableTask) {
+}
+
+func (e *DryRunExecutor) GetCASStore() CASStore {
+	return e.casStore
+}
+
+func (e *DryRunExecutor) GetTaskMetadataStore() TaskMetadataStore {
+	return e.taskMetadataStore
+}
+
+// CAS (Content-Addressable Store) interfaces and types
+
+// ActionDigest represents the hash of task execution parameters  
+type ActionDigest string
+
+// ContentDigest represents the SHA-256 hash of task output content
+type ContentDigest string
+
+// TaskMetadata stores information about a completed task execution
+type TaskMetadata struct {
+	ActionDigest   ActionDigest            `json:"action_digest"`
+	InputDigests   map[string]ContentDigest `json:"input_digests"`
+	OutputDigests  map[string]ContentDigest `json:"output_digests"`
+	EnvVars        map[string]string        `json:"env_vars"`
+	ExitCode       int                     `json:"exit_code"`
+	StderrLogPath  string                  `json:"stderr_log_path,omitempty"`
+	Timestamp      time.Time               `json:"timestamp"`
+	ToolchainHash  string                  `json:"toolchain_hash"`
+}
+
+// CASStore interface for content-addressable storage operations
+type CASStore interface {
+	// Store content and return its digest
+	Store(content []byte) (ContentDigest, error)
+	
+	// Retrieve content by digest
+	Retrieve(digest ContentDigest) ([]byte, error)
+	
+	// Check if content exists
+	Exists(digest ContentDigest) bool
+	
+	// Get the file path for a digest (for streaming)
+	GetPath(digest ContentDigest) string
+	
+	// Create a temporary file for streaming content
+	CreateTempFile(actionDigest ActionDigest) (string, error)
+	
+	// Finalize a temp file by computing its hash and moving to CAS
+	FinalizeTempFile(tempPath string) (ContentDigest, error)
+}
+
+// FilesystemCASStore implements CASStore using local filesystem
+type FilesystemCASStore struct {
+	baseDir string
+}
+
+func NewFilesystemCASStore(baseDir string) *FilesystemCASStore {
+	return &FilesystemCASStore{baseDir: baseDir}
+}
+
+// TaskMetadataStore interface for storing task execution metadata
+type TaskMetadataStore interface {
+	// Store metadata keyed by action digest
+	Store(actionDigest ActionDigest, metadata *TaskMetadata) error
+	
+	// Retrieve metadata by action digest
+	Retrieve(actionDigest ActionDigest) (*TaskMetadata, error)
+	
+	// Check if metadata exists
+	Exists(actionDigest ActionDigest) bool
+}
+
+// FilesystemTaskMetadataStore implements TaskMetadataStore using local filesystem
+type FilesystemTaskMetadataStore struct {
+	baseDir string
+}
+
+func NewFilesystemTaskMetadataStore(baseDir string) *FilesystemTaskMetadataStore {
+	return &FilesystemTaskMetadataStore{baseDir: baseDir}
+}
+
+// FilesystemCASStore implementation
+
+func (c *FilesystemCASStore) Store(content []byte) (ContentDigest, error) {
+	hash := sha256.Sum256(content)
+	digest := ContentDigest(hex.EncodeToString(hash[:]))
+	
+	casPath := getCASObjectPath(c.baseDir, digest)
+	if err := os.MkdirAll(filepath.Dir(casPath), 0755); err != nil {
+		return "", err
+	}
+	
+	// Write atomically using temp file + rename
+	tempPath := casPath + ".part"
+	if err := os.WriteFile(tempPath, content, 0644); err != nil {
+		return "", err
+	}
+	
+	if err := os.Chmod(tempPath, 0444); err != nil {
+		os.Remove(tempPath)
+		return "", err
+	}
+	
+	if err := os.Rename(tempPath, casPath); err != nil {
+		os.Remove(tempPath)
+		return "", err
+	}
+	
+	return digest, nil
+}
+
+func (c *FilesystemCASStore) Retrieve(digest ContentDigest) ([]byte, error) {
+	casPath := getCASObjectPath(c.baseDir, digest)
+	return os.ReadFile(casPath)
+}
+
+func (c *FilesystemCASStore) Exists(digest ContentDigest) bool {
+	casPath := getCASObjectPath(c.baseDir, digest)
+	_, err := os.Stat(casPath)
+	return err == nil
+}
+
+func (c *FilesystemCASStore) GetPath(digest ContentDigest) string {
+	return getCASObjectPath(c.baseDir, digest)
+}
+
+func (c *FilesystemCASStore) CreateTempFile(actionDigest ActionDigest) (string, error) {
+	tempDir := filepath.Join(c.baseDir, "tmp")
+	if err := os.MkdirAll(tempDir, 0755); err != nil {
+		return "", err
+	}
+	
+	timestamp := time.Now().Format("2006-01-02_150405.000")
+	tempPath := filepath.Join(tempDir, fmt.Sprintf("%s.%s.part", actionDigest, timestamp))
+	
+	return tempPath, nil
+}
+
+func (c *FilesystemCASStore) FinalizeTempFile(tempPath string) (ContentDigest, error) {
+	// Read the temp file and compute its hash
+	content, err := os.ReadFile(tempPath)
+	if err != nil {
+		return "", err
+	}
+	
+	hash := sha256.Sum256(content)
+	digest := ContentDigest(hex.EncodeToString(hash[:]))
+	
+	// Move to final CAS location
+	casPath := getCASObjectPath(c.baseDir, digest)
+	if err := os.MkdirAll(filepath.Dir(casPath), 0755); err != nil {
+		return "", err
+	}
+	
+	// Make file read-only and move atomically
+	if err := os.Chmod(tempPath, 0444); err != nil {
+		return "", err
+	}
+	
+	if err := os.Rename(tempPath, casPath); err != nil {
+		// If file already exists, just remove temp file
+		if os.IsExist(err) {
+			os.Remove(tempPath)
+			return digest, nil
+		}
+		return "", err
+	}
+	
+	return digest, nil
+}
+
+// FilesystemTaskMetadataStore implementation
+
+func (t *FilesystemTaskMetadataStore) Store(actionDigest ActionDigest, metadata *TaskMetadata) error {
+	metadataPath := getTaskMetadataPath(t.baseDir, actionDigest)
+	if err := os.MkdirAll(filepath.Dir(metadataPath), 0755); err != nil {
+		return err
+	}
+	
+	data, err := json.MarshalIndent(metadata, "", "  ")
+	if err != nil {
+		return err
+	}
+	
+	return os.WriteFile(metadataPath, data, 0644)
+}
+
+func (t *FilesystemTaskMetadataStore) Retrieve(actionDigest ActionDigest) (*TaskMetadata, error) {
+	metadataPath := getTaskMetadataPath(t.baseDir, actionDigest)
+	data, err := os.ReadFile(metadataPath)
+	if err != nil {
+		return nil, err
+	}
+	
+	var metadata TaskMetadata
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		return nil, err
+	}
+	
+	return &metadata, nil
+}
+
+func (t *FilesystemTaskMetadataStore) Exists(actionDigest ActionDigest) bool {
+	metadataPath := getTaskMetadataPath(t.baseDir, actionDigest)
+	_, err := os.Stat(metadataPath)
+	return err == nil
+}
+
+// Toolchain constants
+const TOOLCHAIN_FINGERPRINT = "sdflow-0.0.1-placeholder"
+
+// Git-style path partitioning utilities
+
+// partitionDigest splits a digest into git-style path components: ab/cd/rest
+func partitionDigest(digest string) (string, string, string) {
+	if len(digest) < 4 {
+		// Handle short digests by padding or using as-is
+		return digest, "", ""
+	}
+	return digest[:2], digest[2:4], digest[4:]
+}
+
+// digestToGitPath converts a digest to git-style partitioned path
+func digestToGitPath(digest string) string {
+	prefix1, prefix2, rest := partitionDigest(digest)
+	if rest == "" {
+		if prefix2 == "" {
+			return prefix1
+		}
+		return filepath.Join(prefix1, prefix2)
+	}
+	return filepath.Join(prefix1, prefix2, rest)
+}
+
+// computeActionDigest computes the action digest for a task
+func computeActionDigest(taskName, expandedRun string, inputDigests map[string]ContentDigest, envVars map[string]string) ActionDigest {
+	hasher := sha256.New()
+	
+	// Task name
+	hasher.Write([]byte(taskName))
+	hasher.Write([]byte{0}) // separator
+	
+	// Expanded run command
+	hasher.Write([]byte(expandedRun))
+	hasher.Write([]byte{0})
+	
+	// Input digests (sorted for determinism)
+	var inputKeys []string
+	for k := range inputDigests {
+		inputKeys = append(inputKeys, k)
+	}
+	sort.Strings(inputKeys)
+	
+	for _, key := range inputKeys {
+		hasher.Write([]byte(key))
+		hasher.Write([]byte{0})
+		hasher.Write([]byte(inputDigests[key]))
+		hasher.Write([]byte{0})
+	}
+	
+	// Environment variables (sorted for determinism)
+	var envKeys []string
+	for k := range envVars {
+		envKeys = append(envKeys, k)
+	}
+	sort.Strings(envKeys)
+	
+	for _, key := range envKeys {
+		hasher.Write([]byte(key))
+		hasher.Write([]byte{0})
+		hasher.Write([]byte(envVars[key]))
+		hasher.Write([]byte{0})
+	}
+	
+	// Toolchain fingerprint
+	hasher.Write([]byte(TOOLCHAIN_FINGERPRINT))
+	
+	return ActionDigest(hex.EncodeToString(hasher.Sum(nil)))
+}
+
+// getCASObjectPath returns the CAS path for a content digest
+func getCASObjectPath(baseDir string, digest ContentDigest) string {
+	partitionedPath := digestToGitPath(string(digest))
+	return filepath.Join(baseDir, "objects", "sha256", partitionedPath)
+}
+
+// getTaskMetadataPath returns the metadata path for an action digest
+func getTaskMetadataPath(baseDir string, digest ActionDigest) string {
+	partitionedPath := digestToGitPath(string(digest))
+	return filepath.Join(baseDir, "tasks", partitionedPath+".json")
+}
+
+// getTaskStdoutDigestFromCAS checks if a task's stdout was captured to CAS and returns the content digest
+func getTaskStdoutDigestFromCAS(task *RunnableTask, executor Executor) (ContentDigest, bool) {
+	if task.casStdoutDigest != "" {
+		return task.casStdoutDigest, true
+	}
+	return "", false
 }
 
 // declare list of candidates for the flow definition file
@@ -181,6 +608,7 @@ type RunnableTask struct {
 	inputs           []*RunnableTaskInput
 	executionState   TaskExecutionState
 	executionCount   int // for testing
+	casStdoutDigest  ContentDigest // CAS digest of captured stdout (for tasks without out:)
 }
 
 func discoverFlowDefinitionFile() string {
@@ -369,7 +797,7 @@ func getTaskInputCachePath(task *RunnableTask, inputPath string) (string, bool) 
 		if len(task.inputs) != 1 {
 			return "", false
 		}
-		return filepath.Join(CACHE_DIRECTORY, sha256Value), true
+		return getCASObjectPath(CACHE_DIRECTORY, ContentDigest(sha256Value)), true
 
 	case map[string]interface{}:
 		// For map SHA256, find the matching SHA256 for this input path
@@ -395,7 +823,7 @@ func getTaskInputCachePath(task *RunnableTask, inputPath string) (string, bool) 
 			return "", false
 		}
 
-		return filepath.Join(CACHE_DIRECTORY, sha256), true
+		return getCASObjectPath(CACHE_DIRECTORY, ContentDigest(sha256)), true
 
 	default:
 		return "", false
@@ -1037,20 +1465,40 @@ func runFlowDefinitionProcessor(flowDefinitionFilePath string, executor Executor
 			task := parsedFlowDefinition.taskLookup[lastArg]
 			runTask(task, parsedFlowDefinition.executionEnv, executor)
 
-			if executor.ShouldUpdateSha256() && task.taskDeclaration.OutSha256 != nil {
-				updatedYamlString := updateOutSha256ForTarget(FLOW_DEFINITION_FILE, task.targetKey, *task.taskDeclaration.OutSha256)
-				outputYamlString := addInterveningSpacesToRootLevelBlocks(updatedYamlString)
-				// re-output the file
-				currentFileMode := os.ModePerm
-				if fileInfo, err := os.Stat(FLOW_DEFINITION_FILE); err == nil {
-					currentFileMode = fileInfo.Mode()
+			// Handle SHA256 updates for both explicit out: fields and CAS-captured stdout
+			if executor.ShouldUpdateSha256() {
+				var needsUpdate bool
+				var sha256ToUpdate string
+
+				if task.taskDeclaration.OutSha256 != nil {
+					// Traditional case: task has explicit out: field
+					needsUpdate = true
+					sha256ToUpdate = *task.taskDeclaration.OutSha256
+				} else if task.taskDeclaration.Out == nil {
+					// New CAS case: task has no out: field, check if stdout was captured
+					if contentDigest, ok := getTaskStdoutDigestFromCAS(task, executor); ok {
+						needsUpdate = true
+						sha256ToUpdate = string(contentDigest)
+						// Set the OutSha256 in the task declaration so updateOutSha256ForTarget can find it
+						task.taskDeclaration.OutSha256 = &sha256ToUpdate
+					}
 				}
-				flowDefinitionSource, err := os.ReadFile(FLOW_DEFINITION_FILE)
-				bailOnError(err)
-				err = os.WriteFile(FLOW_DEFINITION_FILE, []byte(outputYamlString), currentFileMode)
-				if err != nil {
-					log.Printf("original file: %s", flowDefinitionSource)
-					log.Fatalf("error: %v", err)
+
+				if needsUpdate {
+					updatedYamlString := updateOutSha256ForTarget(FLOW_DEFINITION_FILE, task.targetKey, sha256ToUpdate)
+					outputYamlString := addInterveningSpacesToRootLevelBlocks(updatedYamlString)
+					// re-output the file
+					currentFileMode := os.ModePerm
+					if fileInfo, err := os.Stat(FLOW_DEFINITION_FILE); err == nil {
+						currentFileMode = fileInfo.Mode()
+					}
+					flowDefinitionSource, err := os.ReadFile(FLOW_DEFINITION_FILE)
+					bailOnError(err)
+					err = os.WriteFile(FLOW_DEFINITION_FILE, []byte(outputYamlString), currentFileMode)
+					if err != nil {
+						log.Printf("original file: %s", flowDefinitionSource)
+						log.Fatalf("error: %v", err)
+					}
 				}
 			}
 		}
