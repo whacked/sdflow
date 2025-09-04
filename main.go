@@ -538,16 +538,11 @@ func runTask(task *RunnableTask, env map[string]string, shouldUpdateOutSha256 bo
 	if task.taskDeclaration.Run != nil {
 		command := renderCommand(task, env)
 
-		cmd := exec.Command("bash", "-c", command)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-
 		var cmdEnv []string
 		cmdEnv = append(cmdEnv, os.Environ()...)
 		for key, value := range env {
-			cmdEnv = append(cmdEnv, fmt.Sprintf("%s=%s", key, value))
+			cmdEnv = append(cmdEnv, fmt.Sprintf("%s=%s", key, strings.Join(value, " ")))
 		}
-		cmd.Env = cmdEnv
 
 		err := cmd.Run()
 		if err != nil {
