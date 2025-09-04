@@ -590,6 +590,91 @@ myTarget:
 	}
 }
 
+func TestComplexDependencyGraphExecution(t *testing.T) {
+	tmp := t.TempDir()
+	yaml := `
+a.c:
+  run: echo "compiling a.c" && touch $out
+  out: a.o
+
+b.c: 
+  run: echo "compiling b.c" && touch $out
+  out: b.o
+
+c.c:
+  run: echo "compiling c.c" && touch $out  
+  out: c.o
+
+x.o:
+  in: [a.o, b.o]
+  run: echo "linking x.o from $in" && touch $out
+  out: x.o
+
+y.o:
+  in: [b.o, c.o] 
+  run: echo "linking y.o from $in" && touch $out
+  out: y.o
+
+prog_1:
+  in: x.o
+  run: echo "building prog_1 from $in" && touch $out
+  out: prog_1
+
+prog_2: 
+  in: [x.o, y.o]
+  run: echo "building prog_2 from $in" && touch $out  
+  out: prog_2
+`
+	flowPath := filepath.Join(tmp, "Sdflow.yaml")
+
+	if err := os.WriteFile(flowPath, []byte(yaml), 0644); err != nil {
+		t.Fatalf("write flow file: %v", err)
+	}
+
+	// Change to temp directory so relative paths work
+	oldDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get current dir: %v", err)
+	}
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatalf("change to temp dir: %v", err)
+	}
+	defer os.Chdir(oldDir)
+
+	pfd := parseFlowDefinitionFile(flowPath)
+
+	// Phase 1: Run prog_1
+	// This should execute: a.c, b.c, x.o, prog_1
+	task1, ok := pfd.taskLookup["prog_1"]
+	if !ok {
+		t.Fatalf("task 'prog_1' not found")
+	}
+
+	runTask(task1, pfd.executionEnv, NewRealExecutor(false, false))
+
+	// Verify expected execution counts after first run
+	expectedAfterProg1 := map[string]int{
+		"a.c": 1, "b.c": 1, "x.o": 1, "prog_1": 1,
+		"c.c": 0, "y.o": 0, "prog_2": 0,
+	}
+	assertExecutionCounts(t, pfd.taskLookup, expectedAfterProg1)
+
+	// Phase 2: Run prog_2
+	// This should execute: c.c, y.o, prog_2 (skipping b.c, x.o which are already completed)
+	task2, ok := pfd.taskLookup["prog_2"]
+	if !ok {
+		t.Fatalf("task 'prog_2' not found")
+	}
+
+	runTask(task2, pfd.executionEnv, NewRealExecutor(false, false))
+
+	// Verify final execution counts
+	expectedAfterProg2 := map[string]int{
+		"a.c": 1, "b.c": 1, "x.o": 1, "prog_1": 1, // unchanged from phase 1
+		"c.c": 1, "y.o": 1, "prog_2": 1, // newly executed
+	}
+	assertExecutionCounts(t, pfd.taskLookup, expectedAfterProg2)
+}
 
 func TestBasicImplicitDependency(t *testing.T) {
 	yaml := `
