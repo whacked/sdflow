@@ -76,14 +76,13 @@ func (e *RealExecutor) ShouldForceRun() bool {
 }
 
 func (e *RealExecutor) ShowTaskStart(task *RunnableTask) {
-	fmt.Fprintf(
-		os.Stderr,
-		"Running task: %+v (%d dependencies)\n", task.targetName, len(task.taskDependencies))
+	trace(fmt.Sprintf(
+		"Running task: %+v (%d dependencies)\n", task.targetName, len(task.taskDependencies)))
 	printVitalsForTask(task)
 }
 
 func (e *RealExecutor) ShowTaskSkip(task *RunnableTask, reason string) {
-	fmt.Printf("Output is up to date\n")
+	fmt.Printf("Output for %s is up to date\n", task.targetName)
 }
 
 func (e *RealExecutor) ShowTaskCompleted(task *RunnableTask) {
@@ -99,13 +98,17 @@ func NewDryRunExecutor(updateSha256, forceRun bool) *DryRunExecutor {
 	return &DryRunExecutor{updateSha256: updateSha256, forceRun: forceRun}
 }
 
+func tagDryRun(message string) string {
+	return color.YellowString("[DRY RUN] %s", message)
+}
+
 func (e *DryRunExecutor) ExecuteCommand(task *RunnableTask, command string, env []string) error {
-	fmt.Fprintf(os.Stderr, "%s [DRY RUN WOULD EXECUTE]: %s\n", task.targetName, command)
+	fmt.Fprintf(os.Stderr, "%s %s\n", tagDryRun(task.targetName), command)
 	return nil
 }
 
 func (e *DryRunExecutor) DownloadFile(url, outputPath string) error {
-	fmt.Fprintf(os.Stderr, "[DRY RUN WOULD DOWNLOAD]: %s -> %s\n", url, outputPath)
+	fmt.Fprintf(os.Stderr, "%s %s -> %s\n", tagDryRun(url), url, outputPath)
 	return nil
 }
 
@@ -118,14 +121,14 @@ func (e *DryRunExecutor) ShouldForceRun() bool {
 }
 
 func (e *DryRunExecutor) ShowTaskStart(task *RunnableTask) {
-	fmt.Fprintf(
+	fmt.Fprint(
 		os.Stderr,
-		"Running task: %+v (%d dependencies)\n", task.targetName, len(task.taskDependencies))
+		tagDryRun(fmt.Sprintf("Running task: %+v (%d dependencies)\n", task.targetName, len(task.taskDependencies))))
 	printVitalsForTask(task)
 }
 
 func (e *DryRunExecutor) ShowTaskSkip(task *RunnableTask, reason string) {
-	fmt.Fprintf(os.Stderr, "%s [DRY RUN SKIPPED] (%s)\n", task.targetName, reason)
+	fmt.Fprintf(os.Stderr, "%s SKIPPED %s\n", tagDryRun(task.targetName), reason)
 }
 
 func (e *DryRunExecutor) ShowTaskCompleted(task *RunnableTask) {
@@ -348,7 +351,7 @@ func renderCommand(task *RunnableTask, env map[string][]string) string {
 	combinedEnv["in"] = inPaths
 
 	if task.taskDeclaration.Run != nil {
-		fmt.Printf("Run command: %s\n", *task.taskDeclaration.Run)
+		trace(fmt.Sprintf("Run command: %s", *task.taskDeclaration.Run))
 	}
 
 	renderedCommand := expandVariables(*task.taskDeclaration.Run, combinedEnv)
@@ -539,7 +542,7 @@ func runTask(task *RunnableTask, env map[string][]string, executor Executor) {
 	executor.ShowTaskStart(task)
 
 	for _, dep := range task.taskDependencies {
-		fmt.Println("Running dependency:", dep.targetName)
+		trace(fmt.Sprintf("Running dependency: %s", dep.targetName))
 		runTask(dep, env, executor)
 	}
 
