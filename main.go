@@ -288,7 +288,7 @@ func printVitalsForTask(task *RunnableTask) {
 	for _, taskInput := range task.inputs {
 		fmt.Fprintf(os.Stderr,
 			"├ %s\n",
-			color.WhiteString("%s", taskInput.path),
+			color.WhiteString("%s", normalizePathForDisplay(taskInput.path)),
 		)
 	}
 
@@ -301,7 +301,7 @@ func printVitalsForTask(task *RunnableTask) {
 	} else {
 		fmt.Fprintf(os.Stderr,
 			"%s",
-			color.HiBlueString("%s", *task.taskDeclaration.Out),
+			color.HiBlueString("%s", normalizePathForDisplay(*task.taskDeclaration.Out)),
 		)
 	}
 	fmt.Fprintf(os.Stderr, " (%s)", upToDateString)
@@ -641,6 +641,16 @@ func getPathRelativeToCwd(path string) string {
 		relPath = "./" + relPath
 	}
 	return relPath
+}
+
+// normalizePathForDisplay ensures consistent "./" prefix for relative local paths
+func normalizePathForDisplay(path string) string {
+	// Don't modify URLs, absolute paths, or paths that already have proper prefixes
+	if isRemotePath(path) || strings.HasPrefix(path, "/") || strings.HasPrefix(path, "./") || strings.HasPrefix(path, "../") {
+		return path
+	}
+	// For simple relative filenames like "main.go", add "./" prefix
+	return "./" + path
 }
 
 func populateTaskModTimes(task *RunnableTask) {
