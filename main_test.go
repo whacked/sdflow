@@ -51,8 +51,8 @@ BUILD_TYPE: debuggery
 	for key, expectedValue := range expectedVars {
 		if actualValue, exists := pfd.executionEnv[key]; !exists {
 			t.Errorf("environment variable %s not found in executionEnv", key)
-		} else if actualValue != expectedValue {
-			t.Errorf("environment variable %s: expected %q, got %q", key, expectedValue, actualValue)
+		} else if len(actualValue) != 1 || actualValue[0] != expectedValue {
+			t.Errorf("environment variable %s: expected [%q], got %v", key, expectedValue, actualValue)
 		}
 	}
 
@@ -64,8 +64,10 @@ BUILD_TYPE: debuggery
 	// Verify that YAML variables override OS environment variables
 	// This is the key behavior we want to test
 	for key, expectedValue := range expectedVars {
-		if pfd.executionEnv[key] != expectedValue {
-			t.Errorf("YAML variable %s should override OS environment variable: expected %q, got %q", key, expectedValue, pfd.executionEnv[key])
+		if actualValue, exists := pfd.executionEnv[key]; !exists {
+			t.Errorf("YAML variable %s not found in executionEnv", key)
+		} else if len(actualValue) != 1 || actualValue[0] != expectedValue {
+			t.Errorf("YAML variable %s should override OS environment variable: expected [%q], got %v", key, expectedValue, actualValue)
 		}
 	}
 }
