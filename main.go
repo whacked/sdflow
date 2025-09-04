@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -21,6 +20,100 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v5"
 	yaml "gopkg.in/yaml.v3"
 )
+
+// Executor interface defines execution strategies
+type Executor interface {
+	// Core execution methods
+	ExecuteCommand(task *RunnableTask, command string, env []string) error
+	DownloadFile(url, outputPath string) error
+	ShouldUpdateSha256() bool
+	ShouldForceRun() bool
+	
+	// Output methods for different execution phases
+	ShowTaskStart(task *RunnableTask)
+	ShowTaskSkip(task *RunnableTask, reason string)
+	ShowTaskComplete(task *RunnableTask)
+}
+
+// RealExecutor performs actual execution
+type RealExecutor struct {
+	updateSha256 bool
+	forceRun     bool
+}
+
+func NewRealExecutor(updateSha256, forceRun bool) *RealExecutor {
+	return &RealExecutor{updateSha256: updateSha256, forceRun: forceRun}
+}
+
+func (e *RealExecutor) ExecuteCommand(task *RunnableTask, command string, env []string) error {
+	// TODO: implement
+	return fmt.Errorf("not implemented")
+}
+
+func (e *RealExecutor) DownloadFile(url, outputPath string) error {
+	// TODO: implement
+	return fmt.Errorf("not implemented")
+}
+
+func (e *RealExecutor) ShouldUpdateSha256() bool {
+	return e.updateSha256
+}
+
+func (e *RealExecutor) ShouldForceRun() bool {
+	return e.forceRun
+}
+
+func (e *RealExecutor) ShowTaskStart(task *RunnableTask) {
+	// TODO: implement
+}
+
+func (e *RealExecutor) ShowTaskSkip(task *RunnableTask, reason string) {
+	// TODO: implement
+}
+
+func (e *RealExecutor) ShowTaskComplete(task *RunnableTask) {
+	// TODO: implement
+}
+
+// DryRunExecutor simulates execution with pretty output
+type DryRunExecutor struct {
+	updateSha256 bool
+	forceRun     bool
+}
+
+func NewDryRunExecutor(updateSha256, forceRun bool) *DryRunExecutor {
+	return &DryRunExecutor{updateSha256: updateSha256, forceRun: forceRun}
+}
+
+func (e *DryRunExecutor) ExecuteCommand(task *RunnableTask, command string, env []string) error {
+	// TODO: implement
+	return fmt.Errorf("not implemented")
+}
+
+func (e *DryRunExecutor) DownloadFile(url, outputPath string) error {
+	// TODO: implement
+	return fmt.Errorf("not implemented")
+}
+
+func (e *DryRunExecutor) ShouldUpdateSha256() bool {
+	return e.updateSha256
+}
+
+func (e *DryRunExecutor) ShouldForceRun() bool {
+	return e.forceRun
+}
+
+func (e *DryRunExecutor) ShowTaskStart(task *RunnableTask) {
+	// TODO: implement
+}
+
+func (e *DryRunExecutor) ShowTaskSkip(task *RunnableTask, reason string) {
+	// TODO: implement
+}
+
+func (e *DryRunExecutor) ShowTaskComplete(task *RunnableTask) {
+	// TODO: implement
+}
 
 // declare list of candidates for the flow definition file
 var FLOW_DEFINITION_FILE_CANDIDATES = []string{
