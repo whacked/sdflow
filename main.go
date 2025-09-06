@@ -1181,11 +1181,26 @@ func getPathRelativeToCwd(path string) string {
 }
 
 // normalizePathForDisplay ensures consistent "./" prefix for relative local paths
+// and converts paths that were likely absolute back to absolute form for display
 func normalizePathForDisplay(path string) string {
-	// Don't modify URLs, absolute paths, or paths that already have proper prefixes
-	if isRemotePath(path) || strings.HasPrefix(path, "/") || strings.HasPrefix(path, "./") || strings.HasPrefix(path, "../") {
+	// Don't modify URLs or absolute paths
+	if isRemotePath(path) || strings.HasPrefix(path, "/") {
 		return path
 	}
+
+	// If path has many "../" segments, it was likely an absolute path converted to relative
+	// Convert it back to absolute for cleaner display
+	if strings.Count(path, "../") >= 3 {
+		if absPath, err := filepath.Abs(path); err == nil {
+			return absPath
+		}
+	}
+
+	// Ensure relative paths start with "./" for consistency
+	if strings.HasPrefix(path, "./") || strings.HasPrefix(path, "../") {
+		return path
+	}
+
 	// For simple relative filenames like "main.go", add "./" prefix
 	return "./" + path
 }

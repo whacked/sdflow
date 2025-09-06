@@ -1543,6 +1543,80 @@ func TestComputeActionDigestDeterminism(t *testing.T) {
 	}
 }
 
+func TestNormalizePathForDisplay(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+		reason   string
+	}{
+		{
+			name:     "absolute path unchanged",
+			input:    "/tmp/file.txt",
+			expected: "/tmp/file.txt",
+			reason:   "absolute paths should be left unchanged",
+		},
+		{
+			name:     "relative path with ./ prefix unchanged",
+			input:    "./main.go",
+			expected: "./main.go",
+			reason:   "relative paths with ./ prefix should be unchanged",
+		},
+		{
+			name:     "relative path with ../ prefix unchanged",
+			input:    "../parent/file.txt",
+			expected: "../parent/file.txt",
+			reason:   "relative paths with ../ prefix should be unchanged",
+		},
+		{
+			name:     "simple filename gets ./ prefix",
+			input:    "main.go",
+			expected: "./main.go",
+			reason:   "simple filenames should get ./ prefix for consistency",
+		},
+		{
+			name:     "http URL unchanged",
+			input:    "https://example.com/file.txt",
+			expected: "https://example.com/file.txt",
+			reason:   "HTTP URLs should be left unchanged",
+		},
+		{
+			name:     "s3 URL unchanged",
+			input:    "s3://bucket/file.txt",
+			expected: "s3://bucket/file.txt",
+			reason:   "S3 URLs should be left unchanged",
+		},
+		{
+			name:     "many ../ segments converted to absolute",
+			input:    "../../../../../../tmp/file.txt",
+			expected: "/tmp/file.txt",
+			reason:   "paths with many ../ segments were likely absolute, convert back",
+		},
+		{
+			name:     "few ../ segments unchanged",
+			input:    "../file.txt",
+			expected: "../file.txt",
+			reason:   "paths with few ../ segments should remain relative",
+		},
+		{
+			name:     "nested relative path gets ./ prefix",
+			input:    "subdir/file.txt",
+			expected: "./subdir/file.txt",
+			reason:   "nested relative paths should get ./ prefix",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := normalizePathForDisplay(tt.input)
+			if result != tt.expected {
+				t.Errorf("normalizePathForDisplay(%q) = %q, want %q (%s)",
+					tt.input, result, tt.expected, tt.reason)
+			}
+		})
+	}
+}
+
 func TestCASStdoutCapture(t *testing.T) {
 	// Create a temporary directory for testing
 	tempDir := t.TempDir()
