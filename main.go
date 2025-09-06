@@ -72,8 +72,8 @@ func (e *RealExecutor) ExecuteCommand(task *RunnableTask, command string, env []
 	cmd.Stderr = os.Stderr
 	cmd.Env = env
 
-	// Check if we should capture stdout to CAS (no out: field and updateSha256 enabled)
-	shouldCaptureToCAS := task.taskDeclaration.Out == nil && e.updateSha256
+	// Check if we should capture stdout to CAS (no out: field and either updateSha256 enabled or task is referenced)
+	shouldCaptureToCAS := task.taskDeclaration.Out == nil && (e.updateSha256 || task.isReferenced)
 
 	if shouldCaptureToCAS {
 		// Capture stdout to CAS
@@ -97,35 +97,35 @@ func (e *RealExecutor) executeWithCASCapture(task *RunnableTask, cmd *exec.Cmd, 
 			inputDigests[input.path] = ContentDigest(input.sha256)
 		}
 	}
-	
+
 	envMap := make(map[string]string)
 	for _, envVar := range env {
 		if parts := strings.SplitN(envVar, "=", 2); len(parts) == 2 {
 			envMap[parts[0]] = parts[1]
 		}
 	}
-	
+
 	actionDigest := computeActionDigest(task.targetName, command, inputDigests, envMap)
-	
+
 	// Create temp file
 	tempPath, err := e.casStore.CreateTempFile(actionDigest)
 	if err != nil {
 		return fmt.Errorf("failed to create temp file: %v", err)
 	}
-	
+
 	tempFile, err := os.Create(tempPath)
 	if err != nil {
 		return fmt.Errorf("failed to open temp file: %v", err)
 	}
 	defer tempFile.Close()
-	
+
 	// Create hash writer
 	hasher := sha256.New()
-	
+
 	// Use MultiWriter to write to both temp file and display stdout
 	multiWriter := io.MultiWriter(tempFile, hasher, os.Stdout)
 	cmd.Stdout = multiWriter
-	
+
 	// Execute command
 	err = cmd.Run()
 	exitCode := 0
@@ -137,23 +137,23 @@ func (e *RealExecutor) executeWithCASCapture(task *RunnableTask, cmd *exec.Cmd, 
 			return fmt.Errorf("error executing command: %v", err)
 		}
 	}
-	
+
 	// Close temp file before finalizing
 	tempFile.Close()
-	
+
 	if exitCode != 0 {
 		// Command failed - remove temp file and return error
 		os.Remove(tempPath)
 		return fmt.Errorf("command exited with code %d", exitCode)
 	}
-	
+
 	// Finalize temp file to CAS
 	contentDigest, err := e.casStore.FinalizeTempFile(tempPath)
 	if err != nil {
 		os.Remove(tempPath)
 		return fmt.Errorf("failed to finalize to CAS: %v", err)
 	}
-	
+
 	// Store task metadata
 	metadata := &TaskMetadata{
 		ActionDigest:  actionDigest,
@@ -164,14 +164,14 @@ func (e *RealExecutor) executeWithCASCapture(task *RunnableTask, cmd *exec.Cmd, 
 		Timestamp:     time.Now(),
 		ToolchainHash: TOOLCHAIN_FINGERPRINT,
 	}
-	
+
 	if err := e.taskMetadataStore.Store(actionDigest, metadata); err != nil {
 		return fmt.Errorf("failed to store task metadata: %v", err)
 	}
-	
+
 	// Store the content digest in the task for later use
 	task.casStdoutDigest = contentDigest
-	
+
 	return nil
 }
 
@@ -273,7 +273,7 @@ func (e *DryRunExecutor) GetTaskMetadataStore() TaskMetadataStore {
 
 // CAS (Content-Addressable Store) interfaces and types
 
-// ActionDigest represents the hash of task execution parameters  
+// ActionDigest represents the hash of task execution parameters
 type ActionDigest string
 
 // ContentDigest represents the SHA-256 hash of task output content
@@ -281,33 +281,33 @@ type ContentDigest string
 
 // TaskMetadata stores information about a completed task execution
 type TaskMetadata struct {
-	ActionDigest   ActionDigest            `json:"action_digest"`
-	InputDigests   map[string]ContentDigest `json:"input_digests"`
-	OutputDigests  map[string]ContentDigest `json:"output_digests"`
-	EnvVars        map[string]string        `json:"env_vars"`
-	ExitCode       int                     `json:"exit_code"`
-	StderrLogPath  string                  `json:"stderr_log_path,omitempty"`
-	Timestamp      time.Time               `json:"timestamp"`
-	ToolchainHash  string                  `json:"toolchain_hash"`
+	ActionDigest  ActionDigest             `json:"action_digest"`
+	InputDigests  map[string]ContentDigest `json:"input_digests"`
+	OutputDigests map[string]ContentDigest `json:"output_digests"`
+	EnvVars       map[string]string        `json:"env_vars"`
+	ExitCode      int                      `json:"exit_code"`
+	StderrLogPath string                   `json:"stderr_log_path,omitempty"`
+	Timestamp     time.Time                `json:"timestamp"`
+	ToolchainHash string                   `json:"toolchain_hash"`
 }
 
 // CASStore interface for content-addressable storage operations
 type CASStore interface {
 	// Store content and return its digest
 	Store(content []byte) (ContentDigest, error)
-	
+
 	// Retrieve content by digest
 	Retrieve(digest ContentDigest) ([]byte, error)
-	
+
 	// Check if content exists
 	Exists(digest ContentDigest) bool
-	
+
 	// Get the file path for a digest (for streaming)
 	GetPath(digest ContentDigest) string
-	
+
 	// Create a temporary file for streaming content
 	CreateTempFile(actionDigest ActionDigest) (string, error)
-	
+
 	// Finalize a temp file by computing its hash and moving to CAS
 	FinalizeTempFile(tempPath string) (ContentDigest, error)
 }
@@ -325,10 +325,10 @@ func NewFilesystemCASStore(baseDir string) *FilesystemCASStore {
 type TaskMetadataStore interface {
 	// Store metadata keyed by action digest
 	Store(actionDigest ActionDigest, metadata *TaskMetadata) error
-	
+
 	// Retrieve metadata by action digest
 	Retrieve(actionDigest ActionDigest) (*TaskMetadata, error)
-	
+
 	// Check if metadata exists
 	Exists(actionDigest ActionDigest) bool
 }
@@ -347,28 +347,28 @@ func NewFilesystemTaskMetadataStore(baseDir string) *FilesystemTaskMetadataStore
 func (c *FilesystemCASStore) Store(content []byte) (ContentDigest, error) {
 	hash := sha256.Sum256(content)
 	digest := ContentDigest(hex.EncodeToString(hash[:]))
-	
+
 	casPath := getCASObjectPath(c.baseDir, digest)
 	if err := os.MkdirAll(filepath.Dir(casPath), 0755); err != nil {
 		return "", err
 	}
-	
+
 	// Write atomically using temp file + rename
 	tempPath := casPath + ".part"
 	if err := os.WriteFile(tempPath, content, 0644); err != nil {
 		return "", err
 	}
-	
+
 	if err := os.Chmod(tempPath, 0444); err != nil {
 		os.Remove(tempPath)
 		return "", err
 	}
-	
+
 	if err := os.Rename(tempPath, casPath); err != nil {
 		os.Remove(tempPath)
 		return "", err
 	}
-	
+
 	return digest, nil
 }
 
@@ -392,10 +392,10 @@ func (c *FilesystemCASStore) CreateTempFile(actionDigest ActionDigest) (string, 
 	if err := os.MkdirAll(tempDir, 0755); err != nil {
 		return "", err
 	}
-	
+
 	timestamp := time.Now().Format("2006-01-02_150405.000")
 	tempPath := filepath.Join(tempDir, fmt.Sprintf("%s.%s.part", actionDigest, timestamp))
-	
+
 	return tempPath, nil
 }
 
@@ -405,21 +405,21 @@ func (c *FilesystemCASStore) FinalizeTempFile(tempPath string) (ContentDigest, e
 	if err != nil {
 		return "", err
 	}
-	
+
 	hash := sha256.Sum256(content)
 	digest := ContentDigest(hex.EncodeToString(hash[:]))
-	
+
 	// Move to final CAS location
 	casPath := getCASObjectPath(c.baseDir, digest)
 	if err := os.MkdirAll(filepath.Dir(casPath), 0755); err != nil {
 		return "", err
 	}
-	
+
 	// Make file read-only and move atomically
 	if err := os.Chmod(tempPath, 0444); err != nil {
 		return "", err
 	}
-	
+
 	if err := os.Rename(tempPath, casPath); err != nil {
 		// If file already exists, just remove temp file
 		if os.IsExist(err) {
@@ -428,7 +428,7 @@ func (c *FilesystemCASStore) FinalizeTempFile(tempPath string) (ContentDigest, e
 		}
 		return "", err
 	}
-	
+
 	return digest, nil
 }
 
@@ -439,12 +439,12 @@ func (t *FilesystemTaskMetadataStore) Store(actionDigest ActionDigest, metadata 
 	if err := os.MkdirAll(filepath.Dir(metadataPath), 0755); err != nil {
 		return err
 	}
-	
+
 	data, err := json.MarshalIndent(metadata, "", "  ")
 	if err != nil {
 		return err
 	}
-	
+
 	return os.WriteFile(metadataPath, data, 0644)
 }
 
@@ -454,12 +454,12 @@ func (t *FilesystemTaskMetadataStore) Retrieve(actionDigest ActionDigest) (*Task
 	if err != nil {
 		return nil, err
 	}
-	
+
 	var metadata TaskMetadata
 	if err := json.Unmarshal(data, &metadata); err != nil {
 		return nil, err
 	}
-	
+
 	return &metadata, nil
 }
 
@@ -498,46 +498,46 @@ func digestToGitPath(digest string) string {
 // computeActionDigest computes the action digest for a task
 func computeActionDigest(taskName, expandedRun string, inputDigests map[string]ContentDigest, envVars map[string]string) ActionDigest {
 	hasher := sha256.New()
-	
+
 	// Task name
 	hasher.Write([]byte(taskName))
 	hasher.Write([]byte{0}) // separator
-	
+
 	// Expanded run command
 	hasher.Write([]byte(expandedRun))
 	hasher.Write([]byte{0})
-	
+
 	// Input digests (sorted for determinism)
 	var inputKeys []string
 	for k := range inputDigests {
 		inputKeys = append(inputKeys, k)
 	}
 	sort.Strings(inputKeys)
-	
+
 	for _, key := range inputKeys {
 		hasher.Write([]byte(key))
 		hasher.Write([]byte{0})
 		hasher.Write([]byte(inputDigests[key]))
 		hasher.Write([]byte{0})
 	}
-	
+
 	// Environment variables (sorted for determinism)
 	var envKeys []string
 	for k := range envVars {
 		envKeys = append(envKeys, k)
 	}
 	sort.Strings(envKeys)
-	
+
 	for _, key := range envKeys {
 		hasher.Write([]byte(key))
 		hasher.Write([]byte{0})
 		hasher.Write([]byte(envVars[key]))
 		hasher.Write([]byte{0})
 	}
-	
+
 	// Toolchain fingerprint
 	hasher.Write([]byte(TOOLCHAIN_FINGERPRINT))
-	
+
 	return ActionDigest(hex.EncodeToString(hasher.Sum(nil)))
 }
 
@@ -559,6 +559,26 @@ func getTaskStdoutDigestFromCAS(task *RunnableTask, executor Executor) (ContentD
 		return task.casStdoutDigest, true
 	}
 	return "", false
+}
+
+// isTaskReference checks if an input string refers to a task name rather than a file path
+func isTaskReference(input string, taskLookup map[string]*RunnableTask) bool {
+	// Task references should:
+	// 1. Exist in the task lookup
+	// 2. Not be a file path (no path separators or extensions)
+	// 3. The referenced task should have no explicit 'out:' field (stdout capture only)
+
+	if strings.Contains(input, "/") || strings.Contains(input, ".") {
+		// Contains path separators or file extensions, likely a file path
+		return false
+	}
+
+	if referencedTask, exists := taskLookup[input]; exists {
+		// Task exists, check if it has no explicit out: field (stdout capture only)
+		return referencedTask.taskDeclaration != nil && referencedTask.taskDeclaration.Out == nil
+	}
+
+	return false
 }
 
 // declare list of candidates for the flow definition file
@@ -593,10 +613,11 @@ const (
 )
 
 type RunnableTaskInput struct {
-	path   string
-	sha256 string
-	mtime  int64
-	alias  string // New field for named inputs
+	path          string
+	sha256        string
+	mtime         int64
+	alias         string // New field for named inputs
+	taskReference string // If this input is a task reference, store the task name
 }
 
 type RunnableTask struct {
@@ -607,8 +628,9 @@ type RunnableTask struct {
 	outTime          int64
 	inputs           []*RunnableTaskInput
 	executionState   TaskExecutionState
-	executionCount   int // for testing
+	executionCount   int           // for testing
 	casStdoutDigest  ContentDigest // CAS digest of captured stdout (for tasks without out:)
+	isReferenced     bool          // true if this task is referenced by other tasks
 }
 
 func discoverFlowDefinitionFile() string {
@@ -665,32 +687,56 @@ func prettyPrintTask(task *RunnableTask) {
 }
 
 func checkIfOutputMoreRecentThanInputs(task *RunnableTask) bool {
-	if task.taskDeclaration == nil || task.taskDeclaration.Out == nil {
+	if task.taskDeclaration == nil {
 		return false
 	}
 
-	// Check if output file exists
-	outputStat, err := os.Stat(*task.taskDeclaration.Out)
-	if err != nil {
-		// Output file doesn't exist, so task needs to run
-		return false
-	}
+	// Handle tasks with explicit output files
+	if task.taskDeclaration.Out != nil {
+		// Check if output file exists
+		outputStat, err := os.Stat(*task.taskDeclaration.Out)
+		if err != nil {
+			// Output file doesn't exist, so task needs to run
+			return false
+		}
 
-	outputTime := outputStat.ModTime().Unix()
+		outputTime := outputStat.ModTime().Unix()
 
-	// Check all inputs - if any input is newer than output, task needs to run
-	for _, taskInput := range task.inputs {
-		if inputStat, err := os.Stat(taskInput.path); err == nil {
-			taskInput.mtime = inputStat.ModTime().Unix()
-			if outputTime <= taskInput.mtime {
-				return false // Input is newer than output
+		// Check all inputs - if any input is newer than output, task needs to run
+		for _, taskInput := range task.inputs {
+			if inputStat, err := os.Stat(taskInput.path); err == nil {
+				taskInput.mtime = inputStat.ModTime().Unix()
+				if outputTime <= taskInput.mtime {
+					return false // Input is newer than output
+				}
 			}
 		}
-		// If input doesn't exist, we can't compare - assume task needs to run
-		// (This handles cases where inputs are produced by other tasks)
+		return true
 	}
 
-	return true // Output exists and is newer than all existing inputs
+	// Handle CAS-cached tasks (no explicit out: but has out.sha256)
+	if task.taskDeclaration.Out == nil && task.taskDeclaration.OutSha256 != nil {
+		// Task has cached output, check if CAS object exists
+		casPath := getCASObjectPath(CACHE_DIRECTORY, ContentDigest(*task.taskDeclaration.OutSha256))
+		if casStat, err := os.Stat(casPath); err == nil {
+			casTime := casStat.ModTime().Unix()
+
+			// Check all inputs - if any input is newer than CAS object, task needs to run
+			for _, taskInput := range task.inputs {
+				if inputStat, err := os.Stat(taskInput.path); err == nil {
+					taskInput.mtime = inputStat.ModTime().Unix()
+					if casTime <= taskInput.mtime {
+						return false // Input is newer than CAS cache
+					}
+				}
+			}
+			return true // CAS cache is up to date
+		}
+		return false // CAS object doesn't exist
+	}
+
+	// Task has no output (neither explicit file nor CAS cache)
+	return false
 }
 
 func printVitalsForTask(task *RunnableTask) {
@@ -764,17 +810,44 @@ func renderCommand(task *RunnableTask, env map[string][]string) string {
 	// Add input variables
 	var inPaths []string
 	for i, input := range task.inputs {
-		inPaths = append(inPaths, input.path)
+		resolvedPath := input.path
+
+		// If this is a task reference, resolve it to the CAS path
+		if input.taskReference != "" {
+			// Find the referenced task and get its CAS digest
+			for _, dep := range task.taskDependencies {
+				if dep.targetName == input.taskReference {
+					var contentDigest ContentDigest
+
+					// First try to get from runtime CAS digest (for real execution)
+					if dep.casStdoutDigest != "" {
+						contentDigest = dep.casStdoutDigest
+					} else if dep.taskDeclaration != nil && dep.taskDeclaration.OutSha256 != nil {
+						// For dry-run or when task isn't executed yet, use out.sha256 from YAML
+						contentDigest = ContentDigest(*dep.taskDeclaration.OutSha256)
+					}
+
+					if contentDigest != "" {
+						// Get the CAS path for this content digest
+						casPath := getCASObjectPath(CACHE_DIRECTORY, contentDigest)
+						resolvedPath = casPath
+						break
+					}
+				}
+			}
+		}
+
+		inPaths = append(inPaths, resolvedPath)
 
 		// Add input alias variables like "in.first", "in.second"
 		if input.alias != "" {
 			aliasKey := fmt.Sprintf("in.%s", input.alias)
-			combinedEnv[aliasKey] = []string{input.path}
+			combinedEnv[aliasKey] = []string{resolvedPath}
 		}
 
 		// Add indexed input variables like "in_0", "in_1" for ${in[0]}, ${in[1]}
 		indexKey := fmt.Sprintf("in_%d", i)
-		combinedEnv[indexKey] = []string{input.path}
+		combinedEnv[indexKey] = []string{resolvedPath}
 	}
 	combinedEnv["in"] = inPaths
 
@@ -1044,11 +1117,44 @@ func runTask(task *RunnableTask, env map[string][]string, executor Executor) {
 		outputSha256 := getBytesSha256(outputFileBytes)
 		task.taskDeclaration.OutSha256 = &outputSha256
 		trace(fmt.Sprintf("Updated OUT SHA256: %s", outputSha256))
-	} else if shouldCheckOutput && task.taskDeclaration.OutSha256 != nil {
+	} else if shouldCheckOutput && task.taskDeclaration.Out != nil && task.taskDeclaration.OutSha256 != nil {
 		if isFileBytesMatchingSha256(*task.taskDeclaration.Out, *task.taskDeclaration.OutSha256) {
 			trace("OUT SHA256 matches!")
 		} else {
 			trace("OUT SHA256 mismatch!")
+		}
+	}
+
+	// Handle SHA256 updates for referenced tasks (automatic caching) or when --updatehash is used
+	if executor.ShouldUpdateSha256() || task.isReferenced {
+		var needsUpdate bool
+		var sha256ToUpdate string
+
+		if task.taskDeclaration.OutSha256 != nil {
+			// Traditional case: task has explicit out: field
+			needsUpdate = true
+			sha256ToUpdate = *task.taskDeclaration.OutSha256
+		} else if task.taskDeclaration.Out == nil {
+			// New CAS case: task has no out: field, check if stdout was captured
+			if contentDigest, ok := getTaskStdoutDigestFromCAS(task, executor); ok {
+				needsUpdate = true
+				sha256ToUpdate = string(contentDigest)
+				// Set the OutSha256 in the task declaration so updateOutSha256ForTarget can find it
+				task.taskDeclaration.OutSha256 = &sha256ToUpdate
+			}
+		}
+
+		if needsUpdate {
+			updatedYamlString := updateOutSha256ForTarget(FLOW_DEFINITION_FILE, task.targetKey, sha256ToUpdate)
+			outputYamlString := addInterveningSpacesToRootLevelBlocks(updatedYamlString)
+			// re-output the file
+			currentFileMode := os.ModePerm
+			if fileInfo, err := os.Stat(FLOW_DEFINITION_FILE); err == nil {
+				currentFileMode = fileInfo.Mode()
+			}
+			err := os.WriteFile(FLOW_DEFINITION_FILE, []byte(outputYamlString), currentFileMode)
+			bailOnError(err)
+			trace(fmt.Sprintf("Updated YAML file with new SHA256: %s", sha256ToUpdate))
 		}
 	}
 
@@ -1334,6 +1440,9 @@ func parseFlowDefinitionSource(flowDefinitionSource string) *ParsedFlowDefinitio
 		}
 	}
 
+	// Process task references and convert them to proper dependencies
+	processTaskReferences(taskLookup, taskDependencies)
+
 	// Add implicit dependencies based on input/output file matching
 	addImplicitDependencies(taskLookup, taskDependencies)
 
@@ -1359,6 +1468,49 @@ func parseFlowDefinitionSource(flowDefinitionSource string) *ParsedFlowDefinitio
 		executionEnv:     executionEnv,
 	}
 	return &parsedFlowDefinition
+}
+
+// processTaskReferences detects and processes task references in inputs
+func processTaskReferences(taskLookup map[string]*RunnableTask, taskDependencies map[string][]string) {
+	for taskName, task := range taskLookup {
+		if task.taskDeclaration == nil {
+			continue
+		}
+
+		// Only process tasks that are actual task names, not output file aliases
+		if _, isRealTask := taskDependencies[taskName]; !isRealTask {
+			continue
+		}
+
+		for _, input := range task.inputs {
+			if isTaskReference(input.path, taskLookup) {
+				// Mark this input as a task reference
+				input.taskReference = input.path
+
+				// Mark the referenced task as being referenced
+				if referencedTask, exists := taskLookup[input.path]; exists {
+					referencedTask.isReferenced = true
+				}
+
+				// The path will be resolved later during execution
+				// For now, keep the original task name as the path
+
+				// Add dependency (this was already being done by addImplicitDependencies,
+				// but we'll do it here explicitly for task references)
+				dependencyExists := false
+				for _, existingDep := range taskDependencies[taskName] {
+					if existingDep == input.path {
+						dependencyExists = true
+						break
+					}
+				}
+
+				if !dependencyExists {
+					taskDependencies[taskName] = append(taskDependencies[taskName], input.path)
+				}
+			}
+		}
+	}
 }
 
 func addImplicitDependencies(taskLookup map[string]*RunnableTask, taskDependencies map[string][]string) {
@@ -1406,25 +1558,22 @@ func addImplicitDependencies(taskLookup map[string]*RunnableTask, taskDependenci
 				}
 			}
 
-			// Also check if input path matches a task name directly (for task references)
-			if producingTask, exists := taskLookup[input.path]; exists {
-				if producingTask.taskDeclaration != nil && producingTask.targetName == input.path {
-					// This is a direct task reference
-					producingTaskName := producingTask.targetName
+			// Check for task references (tasks without explicit out: field)
+			if isTaskReference(input.path, taskLookup) {
+				producingTaskName := input.path
 
-					// Check if this dependency already exists to avoid duplicates
-					dependencyExists := false
-					for _, existingDep := range taskDependencies[taskName] {
-						if existingDep == producingTaskName {
-							dependencyExists = true
-							break
-						}
+				// Check if this dependency already exists to avoid duplicates
+				dependencyExists := false
+				for _, existingDep := range taskDependencies[taskName] {
+					if existingDep == producingTaskName {
+						dependencyExists = true
+						break
 					}
+				}
 
-					if !dependencyExists {
-						// Add implicit dependency using the task name
-						taskDependencies[taskName] = append(taskDependencies[taskName], producingTaskName)
-					}
+				if !dependencyExists {
+					// Add task reference dependency
+					taskDependencies[taskName] = append(taskDependencies[taskName], producingTaskName)
 				}
 			}
 		}

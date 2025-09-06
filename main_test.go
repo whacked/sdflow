@@ -1449,10 +1449,10 @@ func TestDigestToGitPath(t *testing.T) {
 func TestGetCASObjectPath(t *testing.T) {
 	baseDir := "/tmp/sdflow"
 	digest := ContentDigest("ea8fac7c65fb589b0d53560f5251f74f9e9b243478dcb6b3ea79b5e36449c8d9")
-	
+
 	result := getCASObjectPath(baseDir, digest)
 	expected := filepath.Join(baseDir, "objects", "sha256", "ea", "8f", "ac7c65fb589b0d53560f5251f74f9e9b243478dcb6b3ea79b5e36449c8d9")
-	
+
 	if result != expected {
 		t.Errorf("getCASObjectPath(%q, %q) = %q, want %q", baseDir, digest, result, expected)
 	}
@@ -1461,10 +1461,10 @@ func TestGetCASObjectPath(t *testing.T) {
 func TestGetTaskMetadataPath(t *testing.T) {
 	baseDir := "/tmp/sdflow"
 	digest := ActionDigest("1fb3d9e9a1c4b2e8f5a6c3d4e7f8a9b0c1d2e3f4")
-	
+
 	result := getTaskMetadataPath(baseDir, digest)
 	expected := filepath.Join(baseDir, "tasks", "1f", "b3", "d9e9a1c4b2e8f5a6c3d4e7f8a9b0c1d2e3f4.json")
-	
+
 	if result != expected {
 		t.Errorf("getTaskMetadataPath(%q, %q) = %q, want %q", baseDir, digest, result, expected)
 	}
@@ -1481,15 +1481,15 @@ func TestComputeActionDigest(t *testing.T) {
 		"HOME": "/home/user",
 		"PATH": "/usr/bin",
 	}
-	
+
 	digest1 := computeActionDigest(taskName, expandedRun, inputDigests, envVars)
-	
+
 	// Should be consistent
 	digest2 := computeActionDigest(taskName, expandedRun, inputDigests, envVars)
 	if digest1 != digest2 {
 		t.Error("computeActionDigest should be deterministic")
 	}
-	
+
 	// Different inputs should produce different digests
 	differentEnvVars := map[string]string{
 		"HOME": "/different/home",
@@ -1499,7 +1499,7 @@ func TestComputeActionDigest(t *testing.T) {
 	if digest1 == digest3 {
 		t.Error("Different inputs should produce different digests")
 	}
-	
+
 	// Should be 64 characters (SHA-256 hex)
 	if len(string(digest1)) != 64 {
 		t.Errorf("Action digest should be 64 characters, got %d", len(string(digest1)))
@@ -1510,34 +1510,34 @@ func TestComputeActionDigestDeterminism(t *testing.T) {
 	// Test that order of maps doesn't affect result (should be sorted internally)
 	taskName := "test"
 	expandedRun := "echo test"
-	
+
 	inputDigests1 := map[string]ContentDigest{
 		"a": ContentDigest("hash1"),
 		"b": ContentDigest("hash2"),
 		"c": ContentDigest("hash3"),
 	}
-	
+
 	inputDigests2 := map[string]ContentDigest{
 		"c": ContentDigest("hash3"),
 		"a": ContentDigest("hash1"),
 		"b": ContentDigest("hash2"),
 	}
-	
+
 	envVars1 := map[string]string{
 		"Z_VAR": "last",
 		"A_VAR": "first",
 		"M_VAR": "middle",
 	}
-	
+
 	envVars2 := map[string]string{
 		"A_VAR": "first",
-		"M_VAR": "middle", 
+		"M_VAR": "middle",
 		"Z_VAR": "last",
 	}
-	
+
 	digest1 := computeActionDigest(taskName, expandedRun, inputDigests1, envVars1)
 	digest2 := computeActionDigest(taskName, expandedRun, inputDigests2, envVars2)
-	
+
 	if digest1 != digest2 {
 		t.Error("Action digest should be deterministic regardless of map iteration order")
 	}
@@ -1546,7 +1546,7 @@ func TestComputeActionDigestDeterminism(t *testing.T) {
 func TestCASStdoutCapture(t *testing.T) {
 	// Create a temporary directory for testing
 	tempDir := t.TempDir()
-	
+
 	// Create task without out: field
 	task := &RunnableTask{
 		targetName: "stdout-test",
@@ -1556,35 +1556,35 @@ func TestCASStdoutCapture(t *testing.T) {
 		},
 		inputs: []*RunnableTaskInput{},
 	}
-	
+
 	// Create executor with updateSha256 enabled
 	executor := NewRealExecutor(true, false) // updateSha256=true, forceRun=false
-	
+
 	// Override the CAS store to use temp directory
 	executor.casStore = NewFilesystemCASStore(tempDir)
 	executor.taskMetadataStore = NewFilesystemTaskMetadataStore(tempDir)
-	
+
 	// Execute the command
 	err := executor.ExecuteCommand(task, "echo 'Hello CAS'", os.Environ())
 	if err != nil {
 		t.Fatalf("Expected successful execution, got error: %v", err)
 	}
-	
+
 	// Verify CAS store contains the output
 	expectedContent := "Hello CAS\n"
 	hash := sha256.Sum256([]byte(expectedContent))
 	expectedDigest := ContentDigest(hex.EncodeToString(hash[:]))
-	
+
 	if !executor.GetCASStore().Exists(expectedDigest) {
 		t.Error("Expected content should exist in CAS store")
 	}
-	
+
 	// Verify we can retrieve the content
 	retrievedContent, err := executor.GetCASStore().Retrieve(expectedDigest)
 	if err != nil {
 		t.Fatalf("Failed to retrieve content from CAS: %v", err)
 	}
-	
+
 	if string(retrievedContent) != expectedContent {
 		t.Errorf("Retrieved content %q does not match expected %q", string(retrievedContent), expectedContent)
 	}
@@ -1593,7 +1593,7 @@ func TestCASStdoutCapture(t *testing.T) {
 func TestNormalExecutionWithoutCAS(t *testing.T) {
 	// Test that normal execution (with out: field or updateSha256=false) doesn't use CAS
 	tempDir := t.TempDir()
-	
+
 	// Create task WITH out: field
 	task := &RunnableTask{
 		targetName: "normal-test",
@@ -1603,23 +1603,23 @@ func TestNormalExecutionWithoutCAS(t *testing.T) {
 		},
 		inputs: []*RunnableTaskInput{},
 	}
-	
+
 	// Create executor with updateSha256 enabled (but shouldn't matter due to Out field)
 	executor := NewRealExecutor(true, false)
 	executor.casStore = NewFilesystemCASStore(tempDir)
 	executor.taskMetadataStore = NewFilesystemTaskMetadataStore(tempDir)
-	
+
 	// Execute the command
 	err := executor.ExecuteCommand(task, "echo 'Not captured'", os.Environ())
 	if err != nil {
 		t.Fatalf("Expected successful execution, got error: %v", err)
 	}
-	
+
 	// Verify CAS store is empty (no stdout capture should have occurred)
 	expectedContent := "Not captured\n"
 	hash := sha256.Sum256([]byte(expectedContent))
 	expectedDigest := ContentDigest(hex.EncodeToString(hash[:]))
-	
+
 	if executor.GetCASStore().Exists(expectedDigest) {
 		t.Error("Content should NOT exist in CAS store for tasks with explicit out: field")
 	}
@@ -1628,7 +1628,7 @@ func TestNormalExecutionWithoutCAS(t *testing.T) {
 func TestCASIntegrationWithTask(t *testing.T) {
 	// Test that CAS digest gets stored in the task structure for YAML updating
 	tempDir := t.TempDir()
-	
+
 	// Create task without out: field
 	task := &RunnableTask{
 		targetName: "cas-integration-test",
@@ -1638,41 +1638,190 @@ func TestCASIntegrationWithTask(t *testing.T) {
 		},
 		inputs: []*RunnableTaskInput{},
 	}
-	
+
 	// Create executor with updateSha256 enabled
 	executor := NewRealExecutor(true, false)
 	executor.casStore = NewFilesystemCASStore(tempDir)
 	executor.taskMetadataStore = NewFilesystemTaskMetadataStore(tempDir)
-	
+
 	// Verify task starts with no CAS digest
 	if task.casStdoutDigest != "" {
 		t.Error("Task should start with no CAS stdout digest")
 	}
-	
+
 	// Execute the command
 	err := executor.ExecuteCommand(task, "echo 'CAS Integration Test'", os.Environ())
 	if err != nil {
 		t.Fatalf("Expected successful execution, got error: %v", err)
 	}
-	
+
 	// Verify task now has a CAS stdout digest
 	if task.casStdoutDigest == "" {
 		t.Error("Task should have CAS stdout digest after execution")
 	}
-	
+
 	// Verify the digest matches expected content
 	expectedContent := "CAS Integration Test\n"
 	hash := sha256.Sum256([]byte(expectedContent))
 	expectedDigest := ContentDigest(hex.EncodeToString(hash[:]))
-	
+
 	if task.casStdoutDigest != expectedDigest {
 		t.Errorf("CAS stdout digest %s does not match expected %s", task.casStdoutDigest, expectedDigest)
 	}
-	
+
 	// Test getTaskStdoutDigestFromCAS function
 	if digest, ok := getTaskStdoutDigestFromCAS(task, executor); !ok {
 		t.Error("getTaskStdoutDigestFromCAS should return true for tasks with CAS digest")
 	} else if digest != expectedDigest {
 		t.Errorf("getTaskStdoutDigestFromCAS returned %s, expected %s", digest, expectedDigest)
+	}
+}
+
+func TestTaskReferenceDetection(t *testing.T) {
+	// Test the isTaskReference function
+	yamlContent := `
+producer-task:
+  run: echo "Hello from producer"
+
+consumer-task:
+  in: producer-task
+  run: cat $in
+
+file-task:
+  in: ./some-file.txt
+  run: cat $in
+
+out-task:
+  out: ./output.txt
+  run: echo "Has output"
+`
+
+	pfd := parseFlowDefinitionSource(yamlContent)
+
+	// Test that isTaskReference correctly identifies task references
+	tests := []struct {
+		input    string
+		expected bool
+		reason   string
+	}{
+		{"producer-task", true, "producer-task has no out: field, should be a valid task reference"},
+		{"./some-file.txt", false, "file path should not be a task reference"},
+		{"out-task", false, "task with explicit out: should not be a valid task reference"},
+		{"nonexistent-task", false, "nonexistent task should not be a task reference"},
+		{"file.ext", false, "filename with extension should not be a task reference"},
+	}
+
+	for _, tt := range tests {
+		result := isTaskReference(tt.input, pfd.taskLookup)
+		if result != tt.expected {
+			t.Errorf("isTaskReference(%q) = %v, want %v (%s)", tt.input, result, tt.expected, tt.reason)
+		}
+	}
+}
+
+func TestTaskReferenceDependencyResolution(t *testing.T) {
+	// Test that task references create proper dependencies
+	yamlContent := `
+producer:
+  run: echo "Hello World"
+
+consumer:
+  in: producer
+  run: cat $in
+`
+
+	pfd := parseFlowDefinitionSource(yamlContent)
+
+	// Check that consumer depends on producer
+	consumerTask := pfd.taskLookup["consumer"]
+	if consumerTask == nil {
+		t.Fatal("consumer task not found")
+	}
+
+	// Check that the dependency was added
+	found := false
+	for _, dep := range consumerTask.taskDependencies {
+		if dep.targetName == "producer" {
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		t.Error("consumer task should have producer as a dependency")
+	}
+
+	// Check that the input was marked as a task reference
+	if len(consumerTask.inputs) == 0 {
+		t.Fatal("consumer task should have inputs")
+	}
+
+	input := consumerTask.inputs[0]
+	if input.taskReference != "producer" {
+		t.Errorf("input.taskReference = %q, want %q", input.taskReference, "producer")
+	}
+}
+
+func TestTaskReferenceExecution(t *testing.T) {
+	// Test that task references resolve to CAS paths during execution
+	tempDir := t.TempDir()
+
+	// Create tasks that use task references
+	producerTask := &RunnableTask{
+		targetName: "producer",
+		taskDeclaration: &RunnableSchemaJson{
+			Run: stringPtr("echo 'Task Reference Test'"),
+			// No Out field - stdout should be captured to CAS
+		},
+		inputs:          []*RunnableTaskInput{},
+		casStdoutDigest: "",   // Will be set after execution
+		isReferenced:    true, // Mark as referenced to enable CAS capture without --updatehash
+	}
+
+	consumerTask := &RunnableTask{
+		targetName: "consumer",
+		taskDeclaration: &RunnableSchemaJson{
+			Run: stringPtr("cat $in"),
+		},
+		inputs: []*RunnableTaskInput{
+			{
+				path:          "producer",
+				taskReference: "producer", // This marks it as a task reference
+			},
+		},
+		taskDependencies: []*RunnableTask{producerTask},
+	}
+
+	// Create executor with updateSha256 disabled (task references should work without --updatehash)
+	executor := NewRealExecutor(false, false)
+	executor.casStore = NewFilesystemCASStore(tempDir)
+	executor.taskMetadataStore = NewFilesystemTaskMetadataStore(tempDir)
+
+	// Execute producer task first (simulating dependency execution)
+	err := executor.ExecuteCommand(producerTask, "echo 'Task Reference Test'", os.Environ())
+	if err != nil {
+		t.Fatalf("Failed to execute producer task: %v", err)
+	}
+
+	// Verify producer task has CAS digest
+	if producerTask.casStdoutDigest == "" {
+		t.Fatal("Producer task should have CAS stdout digest after execution")
+	}
+
+	// Create environment for consumer task execution
+	env := make(map[string][]string)
+
+	// Render command for consumer task - this should resolve task reference to CAS path
+	renderedCommand := renderCommand(consumerTask, env)
+
+	// The rendered command should contain the CAS path, not the literal "producer"
+	expectedCASPath := getCASObjectPath(CACHE_DIRECTORY, producerTask.casStdoutDigest)
+	if !strings.Contains(renderedCommand, expectedCASPath) {
+		t.Errorf("Rendered command %q should contain CAS path %q", renderedCommand, expectedCASPath)
+	}
+
+	// Should not contain the literal task name "producer"
+	if strings.Contains(renderedCommand, "producer") {
+		t.Errorf("Rendered command %q should not contain literal task name 'producer'", renderedCommand)
 	}
 }
