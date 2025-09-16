@@ -1649,7 +1649,7 @@ func runFlowDefinitionProcessor(flowDefinitionFilePath string, executor Executor
 			return
 		} else {
 			task := parsedFlowDefinition.taskLookup[lastArg]
-			
+
 			// Use parallel execution if more than 1 worker
 			if executor.WorkerCount() > 1 {
 				runTaskParallel(task, parsedFlowDefinition.executionEnv, executor)
@@ -1742,19 +1742,19 @@ func parseJobsFlag(args []string) (int, error) {
 // calculateDependencyLevels computes the maximum dependency depth for each task
 func calculateDependencyLevels(taskDependencies map[string][]string) map[string]int {
 	levels := make(map[string]int)
-	
+
 	// Initialize all tasks to level -1 (unprocessed)
 	for task := range taskDependencies {
 		levels[task] = -1
 	}
-	
+
 	// Calculate levels using DFS
 	var calculateLevel func(task string) int
 	calculateLevel = func(task string) int {
 		if level, exists := levels[task]; exists && level >= 0 {
 			return level // Already calculated
 		}
-		
+
 		maxDepLevel := -1
 		deps := taskDependencies[task]
 		for _, dep := range deps {
@@ -1763,40 +1763,40 @@ func calculateDependencyLevels(taskDependencies map[string][]string) map[string]
 				maxDepLevel = depLevel
 			}
 		}
-		
+
 		levels[task] = maxDepLevel + 1
 		return levels[task]
 	}
-	
+
 	// Calculate level for all tasks
 	for task := range taskDependencies {
 		calculateLevel(task)
 	}
-	
+
 	return levels
 }
 
 // groupTasksByLevel groups tasks by their dependency level
 func groupTasksByLevel(levels map[string]int) map[int][]string {
 	tasksByLevel := make(map[int][]string)
-	
+
 	for task, level := range levels {
 		tasksByLevel[level] = append(tasksByLevel[level], task)
 	}
-	
+
 	return tasksByLevel
 }
 
 // runTaskParallel is the parallel version of runTask
 func runTaskParallel(task *RunnableTask, env map[string][]string, executor Executor) {
 	workerCount := executor.WorkerCount()
-	
+
 	// If single worker, just use sequential execution
 	if workerCount == 1 {
 		runTask(task, env, executor)
 		return
 	}
-	
+
 	// Build dependency graph for all tasks that this task depends on
 	allTasks := collectAllTaskDependencies(task)
 	if len(allTasks) == 1 {
@@ -1804,11 +1804,11 @@ func runTaskParallel(task *RunnableTask, env map[string][]string, executor Execu
 		runTask(task, env, executor)
 		return
 	}
-	
+
 	// Create task dependency map
 	taskDeps := make(map[string][]string)
 	taskLookup := make(map[string]*RunnableTask)
-	
+
 	for _, t := range allTasks {
 		taskLookup[t.targetName] = t
 		var deps []string
@@ -1817,11 +1817,11 @@ func runTaskParallel(task *RunnableTask, env map[string][]string, executor Execu
 		}
 		taskDeps[t.targetName] = deps
 	}
-	
+
 	// Calculate dependency levels
 	levels := calculateDependencyLevels(taskDeps)
 	tasksByLevel := groupTasksByLevel(levels)
-	
+
 	// Execute tasks level by level with parallelism within each level
 	executeTasksByLevel(tasksByLevel, taskLookup, env, executor)
 }
@@ -1830,22 +1830,22 @@ func runTaskParallel(task *RunnableTask, env map[string][]string, executor Execu
 func collectAllTaskDependencies(task *RunnableTask) []*RunnableTask {
 	visited := make(map[string]bool)
 	var result []*RunnableTask
-	
+
 	var collect func(*RunnableTask)
 	collect = func(t *RunnableTask) {
 		if visited[t.targetName] {
 			return
 		}
 		visited[t.targetName] = true
-		
+
 		// Collect dependencies first
 		for _, dep := range t.taskDependencies {
 			collect(dep)
 		}
-		
+
 		result = append(result, t)
 	}
-	
+
 	collect(task)
 	return result
 }
@@ -1853,7 +1853,7 @@ func collectAllTaskDependencies(task *RunnableTask) []*RunnableTask {
 // executeTasksByLevel executes tasks level by level with parallelism within each level
 func executeTasksByLevel(tasksByLevel map[int][]string, taskLookup map[string]*RunnableTask, env map[string][]string, executor Executor) {
 	workerCount := executor.WorkerCount()
-	
+
 	// Find max level
 	maxLevel := 0
 	for level := range tasksByLevel {
@@ -1861,24 +1861,24 @@ func executeTasksByLevel(tasksByLevel map[int][]string, taskLookup map[string]*R
 			maxLevel = level
 		}
 	}
-	
+
 	// Execute each level
 	for level := 0; level <= maxLevel; level++ {
 		tasksAtLevel := tasksByLevel[level]
 		if len(tasksAtLevel) == 0 {
 			continue
 		}
-		
+
 		// Create worker pool for this level
 		taskQueue := make(chan *RunnableTask, len(tasksAtLevel))
 		var wg sync.WaitGroup
-		
+
 		// Start workers (up to workerCount or number of tasks, whichever is smaller)
 		numWorkers := workerCount
 		if len(tasksAtLevel) < numWorkers {
 			numWorkers = len(tasksAtLevel)
 		}
-		
+
 		for i := 0; i < numWorkers; i++ {
 			wg.Add(1)
 			go func() {
@@ -1889,14 +1889,14 @@ func executeTasksByLevel(tasksByLevel map[int][]string, taskLookup map[string]*R
 				}
 			}()
 		}
-		
+
 		// Queue all tasks for this level
 		for _, taskName := range tasksAtLevel {
 			if task, exists := taskLookup[taskName]; exists {
 				taskQueue <- task
 			}
 		}
-		
+
 		close(taskQueue)
 		wg.Wait() // Wait for all tasks at this level to complete
 	}
@@ -1919,7 +1919,7 @@ func runTaskSingle(task *RunnableTask, env map[string][]string, executor Executo
 	executor.ShowTaskStart(task)
 
 	// Note: We don't run dependencies here as they're handled at the level-by-level execution
-	
+
 	if task.taskDeclaration == nil {
 		fmt.Println(color.RedString("No task declaration found!!!"))
 		return
@@ -1983,7 +1983,7 @@ func runTaskSingle(task *RunnableTask, env map[string][]string, executor Executo
 			// Use mutex to prevent race conditions when multiple parallel tasks update YAML
 			yamlUpdateMutex.Lock()
 			defer yamlUpdateMutex.Unlock()
-			
+
 			updatedYamlString := updateOutSha256ForTarget(FLOW_DEFINITION_FILE, task.targetKey, sha256ToUpdate)
 			outputYamlString := addInterveningSpacesToRootLevelBlocks(updatedYamlString)
 			// re-output the file
@@ -2012,15 +2012,7 @@ func main() {
 
 	var rootCmd = &cobra.Command{
 
-		Use: strings.Join(
-			[]string{
-				fmt.Sprintf("\n- %s %s", COLORIZED_PROGRAM_NAME, color.CyanString("[flags]")),
-				"\n",
-				"\n[validate]  is the path to the input data file to be processed, or - to read from STDIN, or implied as STDIN",
-				"\n[completions] is the path to the jsonata or jsonnet file to be used for transformation, or the code as a string",
-			},
-			"",
-		),
+		Use:   fmt.Sprintf("%s %s", COLORIZED_PROGRAM_NAME, color.CyanString("[flags]")),
 		Short: "flow runner",
 		RunE: func(cmd *cobra.Command, args []string) error {
 
@@ -2061,7 +2053,7 @@ func main() {
 			shouldForceRun, _ := cmd.Flags().GetBool("always-run")
 			isDryRun, _ := cmd.Flags().GetBool("dry-run")
 			jobCount, _ := cmd.Flags().GetInt("jobs")
-			
+
 			// Validate job count
 			if jobCount <= 0 {
 				return fmt.Errorf("invalid job count %d: must be positive", jobCount)
