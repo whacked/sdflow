@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	yaml "gopkg.in/yaml.v3"
 
@@ -25,6 +26,9 @@ import (
 )
 
 var debugLevel int
+
+// Global mutex for thread-safe YAML file updates in parallel execution
+var yamlUpdateMutex sync.Mutex
 
 func init() {
 	debugLevelStr := os.Getenv("DEBUG_LEVEL")

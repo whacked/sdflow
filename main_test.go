@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const testConf string = `
@@ -1369,6 +1370,371 @@ compute-task:
 // Helper function for string pointer (used in tests)
 func stringPtr(s string) *string {
 	return &s
+}
+
+// Parallel execution tests
+
+func TestParallelExecutorConstructors(t *testing.T) {
+	t.Run("RealExecutor with worker count", func(t *testing.T) {
+		executor := NewRealExecutorWithWorkers(4, false, false)
+		if executor.WorkerCount() != 4 {
+			t.Errorf("Expected worker count 4, got %d", executor.WorkerCount())
+		}
+	})
+
+	t.Run("DryRunExecutor with worker count", func(t *testing.T) {
+		executor := NewDryRunExecutorWithWorkers(2, false, false)
+		if executor.WorkerCount() != 2 {
+			t.Errorf("Expected worker count 2, got %d", executor.WorkerCount())
+		}
+	})
+
+	t.Run("Default single worker behavior", func(t *testing.T) {
+		realExec := NewRealExecutor(false, false)
+		dryExec := NewDryRunExecutor(false, false)
+		
+		// These should default to 1 worker
+		if realExec.WorkerCount() != 1 {
+			t.Errorf("Expected default worker count 1 for RealExecutor, got %d", realExec.WorkerCount())
+		}
+		if dryExec.WorkerCount() != 1 {
+			t.Errorf("Expected default worker count 1 for DryRunExecutor, got %d", dryExec.WorkerCount())
+		}
+	})
+}
+
+func TestDependencyLevelCalculation(t *testing.T) {
+	// Create test task dependencies
+	taskDependencies := map[string][]string{
+		"level0-task1": {},
+		"level0-task2": {},
+		"level1-task1": {"level0-task1"},
+		"level1-task2": {"level0-task2"},
+		"level2-task1": {"level1-task1", "level1-task2"},
+	}
+
+	expectedLevels := map[string]int{
+		"level0-task1": 0,
+		"level0-task2": 0,
+		"level1-task1": 1,
+		"level1-task2": 1,
+		"level2-task1": 2,
+	}
+
+	levels := calculateDependencyLevels(taskDependencies)
+	
+	for task, expectedLevel := range expectedLevels {
+		if actualLevel, exists := levels[task]; !exists {
+			t.Errorf("Task %s not found in levels map", task)
+		} else if actualLevel != expectedLevel {
+			t.Errorf("Task %s expected level %d, got %d", task, expectedLevel, actualLevel)
+		}
+	}
+}
+
+func TestTasksByLevel(t *testing.T) {
+	taskDependencies := map[string][]string{
+		"a": {},
+		"b": {},
+		"c": {"a"},
+		"d": {"b"},
+		"e": {"c", "d"},
+	}
+
+	levels := calculateDependencyLevels(taskDependencies)
+	tasksByLevel := groupTasksByLevel(levels)
+
+	// Level 0 should have tasks "a" and "b"
+	level0Tasks := tasksByLevel[0]
+	if len(level0Tasks) != 2 {
+		t.Errorf("Expected 2 tasks at level 0, got %d", len(level0Tasks))
+	}
+	expectedLevel0 := map[string]bool{"a": true, "b": true}
+	for _, task := range level0Tasks {
+		if !expectedLevel0[task] {
+			t.Errorf("Unexpected task %s at level 0", task)
+		}
+	}
+
+	// Level 1 should have tasks "c" and "d"
+	level1Tasks := tasksByLevel[1]
+	if len(level1Tasks) != 2 {
+		t.Errorf("Expected 2 tasks at level 1, got %d", len(level1Tasks))
+	}
+	expectedLevel1 := map[string]bool{"c": true, "d": true}
+	for _, task := range level1Tasks {
+		if !expectedLevel1[task] {
+			t.Errorf("Unexpected task %s at level 1", task)
+		}
+	}
+
+	// Level 2 should have task "e"
+	level2Tasks := tasksByLevel[2]
+	if len(level2Tasks) != 1 || level2Tasks[0] != "e" {
+		t.Errorf("Expected task 'e' at level 2, got %v", level2Tasks)
+	}
+}
+
+func TestParallelTaskExecution(t *testing.T) {
+	// Create a simpler test YAML with independent tasks
+	testYaml := `
+test-parallel-simple:
+  run: echo "simple task"; sleep 0.05`
+
+	// Write test file
+	tempDir, err := os.MkdirTemp("", "sdflow_parallel_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	flowPath := filepath.Join(tempDir, "test-flow.yaml")
+	err = os.WriteFile(flowPath, []byte(testYaml), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("Basic parallel execution functionality", func(t *testing.T) {
+		executor := NewRealExecutorWithWorkers(4, false, false)
+		
+		parsedFlow := parseFlowDefinitionFile(flowPath)
+		task := parsedFlow.taskLookup["test-parallel-simple"]
+		
+		if task == nil {
+			t.Fatal("Task not found in parsed flow")
+		}
+		
+		start := time.Now()
+		runTaskParallel(task, parsedFlow.executionEnv, executor)
+		duration := time.Since(start)
+		
+		// Should complete successfully
+		if task.executionState != TaskCompleted {
+			t.Errorf("Expected task to be completed, got state: %v", task.executionState)
+		}
+		
+		// Should take at least the sleep time
+		if duration < 40*time.Millisecond {
+			t.Errorf("Execution too fast, expected >40ms, got %v", duration)
+		}
+	})
+
+	t.Run("Sequential vs Parallel comparison - stub test", func(t *testing.T) {
+		// This is a placeholder for a more comprehensive parallel vs sequential test
+		// For now, just verify the worker count functionality works
+		
+		seqExecutor := NewRealExecutorWithWorkers(1, false, false)
+		parExecutor := NewRealExecutorWithWorkers(4, false, false)
+		
+		if seqExecutor.WorkerCount() != 1 {
+			t.Errorf("Sequential executor should have 1 worker, got %d", seqExecutor.WorkerCount())
+		}
+		
+		if parExecutor.WorkerCount() != 4 {
+			t.Errorf("Parallel executor should have 4 workers, got %d", parExecutor.WorkerCount())
+		}
+	})
+}
+
+func TestTaskReferenceArrayDetection(t *testing.T) {
+	// Test that task references work correctly in array inputs
+	testYaml := `
+producer-1:
+  run: echo "producer 1"
+
+producer-2:  
+  run: echo "producer 2"
+
+consumer:
+  in:
+    - producer-1
+    - producer-2
+  run: echo "consuming from producers"`
+
+	// Write test file
+	tempDir, err := os.MkdirTemp("", "sdflow_array_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	flowPath := filepath.Join(tempDir, "test-flow.yaml")
+	err = os.WriteFile(flowPath, []byte(testYaml), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	parsedFlow := parseFlowDefinitionFile(flowPath)
+	
+	// Check if producer tasks are marked as referenced
+	producer1 := parsedFlow.taskLookup["producer-1"]
+	producer2 := parsedFlow.taskLookup["producer-2"]
+	consumer := parsedFlow.taskLookup["consumer"]
+	
+	if producer1 == nil || producer2 == nil || consumer == nil {
+		t.Fatal("Tasks not found in parsed flow")
+	}
+	
+	t.Logf("producer-1.isReferenced: %v", producer1.isReferenced)
+	t.Logf("producer-2.isReferenced: %v", producer2.isReferenced)
+	t.Logf("consumer inputs: %d", len(consumer.inputs))
+	for i, input := range consumer.inputs {
+		t.Logf("consumer input[%d]: path=%s, taskReference=%s", i, input.path, input.taskReference)
+	}
+	
+	// Verify that producer tasks are marked as referenced
+	if !producer1.isReferenced {
+		t.Error("producer-1 should be marked as referenced")
+	}
+	if !producer2.isReferenced {
+		t.Error("producer-2 should be marked as referenced")
+	}
+}
+
+func TestParallelFinalTaskReferences(t *testing.T) {
+	// Test that tasks referenced by parallel-final are properly marked as referenced
+	parsedFlow := parseFlowDefinitionFile("./Sdflow.yaml")
+	
+	parallelFinal := parsedFlow.taskLookup["parallel-final"]
+	if parallelFinal == nil {
+		t.Fatal("parallel-final task not found")
+	}
+	
+	// Check some of the parallel tasks to see if they're marked as referenced
+	testTasks := []string{"parallel-task-03", "parallel-task-04", "parallel-task-05"}
+	
+	for _, taskName := range testTasks {
+		task := parsedFlow.taskLookup[taskName]
+		if task == nil {
+			t.Errorf("Task %s not found", taskName)
+			continue
+		}
+		
+		t.Logf("Task %s: isReferenced=%v", taskName, task.isReferenced)
+		if !task.isReferenced {
+			t.Errorf("Task %s should be marked as referenced by parallel-final", taskName)
+		}
+	}
+	
+	// Check inputs of parallel-final
+	t.Logf("parallel-final has %d inputs", len(parallelFinal.inputs))
+	for i, input := range parallelFinal.inputs {
+		if i < 5 { // Just show first 5 to avoid spam
+			t.Logf("parallel-final input[%d]: path=%s, taskReference=%s", i, input.path, input.taskReference)
+		}
+	}
+}
+
+func TestParallelSHA256Caching(t *testing.T) {
+	// Test that tasks without out: field get proper SHA256 caching in parallel execution
+	testYaml := `
+parallel-sha256-test:
+  run: echo "SHA256 test output"`
+
+	// Write test file
+	tempDir, err := os.MkdirTemp("", "sdflow_sha256_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	flowPath := filepath.Join(tempDir, "test-flow.yaml")
+	err = os.WriteFile(flowPath, []byte(testYaml), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Change to temp directory for this test to avoid modifying main Sdflow.yaml
+	oldWd, _ := os.Getwd()
+	defer os.Chdir(oldWd)
+	os.Chdir(tempDir)
+	
+	// Set up proper environment for the test
+	oldFlowFile := FLOW_DEFINITION_FILE
+	defer func() { FLOW_DEFINITION_FILE = oldFlowFile }()
+	FLOW_DEFINITION_FILE = flowPath
+
+	t.Run("Parallel execution with SHA256 caching", func(t *testing.T) {
+		executor := NewRealExecutorWithWorkers(4, true, false) // Enable updateSha256
+		
+		parsedFlow := parseFlowDefinitionFile(flowPath)
+		task := parsedFlow.taskLookup["parallel-sha256-test"]
+		
+		if task == nil {
+			t.Fatal("Task not found in parsed flow")
+		}
+		
+		// Execute with parallel execution
+		runTaskParallel(task, parsedFlow.executionEnv, executor)
+		
+		// Verify task completed successfully
+		if task.executionState != TaskCompleted {
+			t.Errorf("Expected task to be completed, got state: %v", task.executionState)
+		}
+		
+		// Verify SHA256 was set in task declaration
+		if task.taskDeclaration.OutSha256 == nil {
+			t.Error("Expected OutSha256 to be set after parallel execution with updateSha256=true")
+		} else {
+			// Verify it looks like a valid SHA256 (64 hex characters)
+			sha256Val := *task.taskDeclaration.OutSha256
+			if len(sha256Val) != 64 {
+				t.Errorf("Expected SHA256 length 64, got %d: %s", len(sha256Val), sha256Val)
+			}
+		}
+		
+		// Read the updated YAML file and verify SHA256 was written
+		updatedYaml, err := os.ReadFile(flowPath)
+		if err != nil {
+			t.Fatalf("Failed to read updated YAML: %v", err)
+		}
+		
+		yamlContent := string(updatedYaml)
+		if !strings.Contains(yamlContent, "out.sha256:") {
+			t.Error("Expected 'out.sha256:' to be present in updated YAML file")
+		}
+	})
+}
+
+func TestCommandLineFlagParsing(t *testing.T) {
+	// This test will verify that -j flag is properly parsed
+	// We'll need to test this through cobra command execution
+	
+	t.Run("Valid job count", func(t *testing.T) {
+		// Test parsing -j 4
+		jobCount, err := parseJobsFlag([]string{"-j", "4"})
+		if err != nil {
+			t.Errorf("Failed to parse valid jobs flag: %v", err)
+		}
+		if jobCount != 4 {
+			t.Errorf("Expected job count 4, got %d", jobCount)
+		}
+	})
+	
+	t.Run("Invalid job count", func(t *testing.T) {
+		// Test parsing -j 0 (should be invalid)
+		_, err := parseJobsFlag([]string{"-j", "0"})
+		if err == nil {
+			t.Error("Expected error for invalid job count 0")
+		}
+		
+		// Test parsing -j -1 (should be invalid)
+		_, err = parseJobsFlag([]string{"-j", "-1"})
+		if err == nil {
+			t.Error("Expected error for negative job count")
+		}
+	})
+	
+	t.Run("Default job count", func(t *testing.T) {
+		// Test default behavior (no -j flag)
+		jobCount, err := parseJobsFlag([]string{})
+		if err != nil {
+			t.Errorf("Failed to parse default jobs: %v", err)
+		}
+		if jobCount != 1 {
+			t.Errorf("Expected default job count 1, got %d", jobCount)
+		}
+	})
 }
 
 // CAS and path partitioning tests

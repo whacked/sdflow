@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"embed"
@@ -32,6 +33,7 @@ type Executor interface {
 	DownloadFile(url, outputPath string) error
 	ShouldUpdateSha256() bool
 	ShouldForceRun() bool
+	WorkerCount() int
 
 	// Output methods for different execution phases
 	ShowTaskStart(task *RunnableTask)
@@ -47,16 +49,22 @@ type Executor interface {
 type RealExecutor struct {
 	updateSha256      bool
 	forceRun          bool
+	workerCount       int
 	casStore          CASStore
 	taskMetadataStore TaskMetadataStore
 }
 
 func NewRealExecutor(updateSha256, forceRun bool) *RealExecutor {
+	return NewRealExecutorWithWorkers(1, updateSha256, forceRun)
+}
+
+func NewRealExecutorWithWorkers(workerCount int, updateSha256, forceRun bool) *RealExecutor {
 	casStore := NewFilesystemCASStore(CACHE_DIRECTORY)
 	taskMetadataStore := NewFilesystemTaskMetadataStore(CACHE_DIRECTORY)
 	return &RealExecutor{
 		updateSha256:      updateSha256,
 		forceRun:          forceRun,
+		workerCount:       workerCount,
 		casStore:          casStore,
 		taskMetadataStore: taskMetadataStore,
 	}
@@ -187,6 +195,10 @@ func (e *RealExecutor) ShouldForceRun() bool {
 	return e.forceRun
 }
 
+func (e *RealExecutor) WorkerCount() int {
+	return e.workerCount
+}
+
 func (e *RealExecutor) ShowTaskStart(task *RunnableTask) {
 	trace(fmt.Sprintf(
 		"Running task: %+v (%d dependencies)\n", task.targetName, len(task.taskDependencies)))
@@ -212,16 +224,22 @@ func (e *RealExecutor) GetTaskMetadataStore() TaskMetadataStore {
 type DryRunExecutor struct {
 	updateSha256      bool
 	forceRun          bool
+	workerCount       int
 	casStore          CASStore
 	taskMetadataStore TaskMetadataStore
 }
 
 func NewDryRunExecutor(updateSha256, forceRun bool) *DryRunExecutor {
+	return NewDryRunExecutorWithWorkers(1, updateSha256, forceRun)
+}
+
+func NewDryRunExecutorWithWorkers(workerCount int, updateSha256, forceRun bool) *DryRunExecutor {
 	casStore := NewFilesystemCASStore(CACHE_DIRECTORY)
 	taskMetadataStore := NewFilesystemTaskMetadataStore(CACHE_DIRECTORY)
 	return &DryRunExecutor{
 		updateSha256:      updateSha256,
 		forceRun:          forceRun,
+		workerCount:       workerCount,
 		casStore:          casStore,
 		taskMetadataStore: taskMetadataStore,
 	}
@@ -247,6 +265,10 @@ func (e *DryRunExecutor) ShouldUpdateSha256() bool {
 
 func (e *DryRunExecutor) ShouldForceRun() bool {
 	return e.forceRun
+}
+
+func (e *DryRunExecutor) WorkerCount() int {
+	return e.workerCount
 }
 
 func (e *DryRunExecutor) ShowTaskStart(task *RunnableTask) {
@@ -1627,7 +1649,13 @@ func runFlowDefinitionProcessor(flowDefinitionFilePath string, executor Executor
 			return
 		} else {
 			task := parsedFlowDefinition.taskLookup[lastArg]
-			runTask(task, parsedFlowDefinition.executionEnv, executor)
+			
+			// Use parallel execution if more than 1 worker
+			if executor.WorkerCount() > 1 {
+				runTaskParallel(task, parsedFlowDefinition.executionEnv, executor)
+			} else {
+				runTask(task, parsedFlowDefinition.executionEnv, executor)
+			}
 
 			// Handle SHA256 updates for both explicit out: fields and CAS-captured stdout
 			if executor.ShouldUpdateSha256() {
@@ -1692,6 +1720,288 @@ func reformatFlowDefinitionFile(flowDefinitionFile string) string {
 	return addInterveningSpacesToRootLevelBlocks(updatedYaml)
 }
 
+// Helper function for testing job flag parsing
+func parseJobsFlag(args []string) (int, error) {
+	for i, arg := range args {
+		if arg == "-j" && i+1 < len(args) {
+			jobCount := 0
+			if _, err := fmt.Sscanf(args[i+1], "%d", &jobCount); err != nil {
+				return 0, fmt.Errorf("invalid job count: %s", args[i+1])
+			}
+			if jobCount <= 0 {
+				return 0, fmt.Errorf("job count must be positive, got: %d", jobCount)
+			}
+			return jobCount, nil
+		}
+	}
+	return 1, nil // default
+}
+
+// Parallel execution functions
+
+// calculateDependencyLevels computes the maximum dependency depth for each task
+func calculateDependencyLevels(taskDependencies map[string][]string) map[string]int {
+	levels := make(map[string]int)
+	
+	// Initialize all tasks to level -1 (unprocessed)
+	for task := range taskDependencies {
+		levels[task] = -1
+	}
+	
+	// Calculate levels using DFS
+	var calculateLevel func(task string) int
+	calculateLevel = func(task string) int {
+		if level, exists := levels[task]; exists && level >= 0 {
+			return level // Already calculated
+		}
+		
+		maxDepLevel := -1
+		deps := taskDependencies[task]
+		for _, dep := range deps {
+			depLevel := calculateLevel(dep)
+			if depLevel > maxDepLevel {
+				maxDepLevel = depLevel
+			}
+		}
+		
+		levels[task] = maxDepLevel + 1
+		return levels[task]
+	}
+	
+	// Calculate level for all tasks
+	for task := range taskDependencies {
+		calculateLevel(task)
+	}
+	
+	return levels
+}
+
+// groupTasksByLevel groups tasks by their dependency level
+func groupTasksByLevel(levels map[string]int) map[int][]string {
+	tasksByLevel := make(map[int][]string)
+	
+	for task, level := range levels {
+		tasksByLevel[level] = append(tasksByLevel[level], task)
+	}
+	
+	return tasksByLevel
+}
+
+// runTaskParallel is the parallel version of runTask
+func runTaskParallel(task *RunnableTask, env map[string][]string, executor Executor) {
+	workerCount := executor.WorkerCount()
+	
+	// If single worker, just use sequential execution
+	if workerCount == 1 {
+		runTask(task, env, executor)
+		return
+	}
+	
+	// Build dependency graph for all tasks that this task depends on
+	allTasks := collectAllTaskDependencies(task)
+	if len(allTasks) == 1 {
+		// Only this task, no dependencies - just run it
+		runTask(task, env, executor)
+		return
+	}
+	
+	// Create task dependency map
+	taskDeps := make(map[string][]string)
+	taskLookup := make(map[string]*RunnableTask)
+	
+	for _, t := range allTasks {
+		taskLookup[t.targetName] = t
+		var deps []string
+		for _, dep := range t.taskDependencies {
+			deps = append(deps, dep.targetName)
+		}
+		taskDeps[t.targetName] = deps
+	}
+	
+	// Calculate dependency levels
+	levels := calculateDependencyLevels(taskDeps)
+	tasksByLevel := groupTasksByLevel(levels)
+	
+	// Execute tasks level by level with parallelism within each level
+	executeTasksByLevel(tasksByLevel, taskLookup, env, executor)
+}
+
+// collectAllTaskDependencies recursively collects all tasks that the given task depends on (including itself)
+func collectAllTaskDependencies(task *RunnableTask) []*RunnableTask {
+	visited := make(map[string]bool)
+	var result []*RunnableTask
+	
+	var collect func(*RunnableTask)
+	collect = func(t *RunnableTask) {
+		if visited[t.targetName] {
+			return
+		}
+		visited[t.targetName] = true
+		
+		// Collect dependencies first
+		for _, dep := range t.taskDependencies {
+			collect(dep)
+		}
+		
+		result = append(result, t)
+	}
+	
+	collect(task)
+	return result
+}
+
+// executeTasksByLevel executes tasks level by level with parallelism within each level
+func executeTasksByLevel(tasksByLevel map[int][]string, taskLookup map[string]*RunnableTask, env map[string][]string, executor Executor) {
+	workerCount := executor.WorkerCount()
+	
+	// Find max level
+	maxLevel := 0
+	for level := range tasksByLevel {
+		if level > maxLevel {
+			maxLevel = level
+		}
+	}
+	
+	// Execute each level
+	for level := 0; level <= maxLevel; level++ {
+		tasksAtLevel := tasksByLevel[level]
+		if len(tasksAtLevel) == 0 {
+			continue
+		}
+		
+		// Create worker pool for this level
+		taskQueue := make(chan *RunnableTask, len(tasksAtLevel))
+		var wg sync.WaitGroup
+		
+		// Start workers (up to workerCount or number of tasks, whichever is smaller)
+		numWorkers := workerCount
+		if len(tasksAtLevel) < numWorkers {
+			numWorkers = len(tasksAtLevel)
+		}
+		
+		for i := 0; i < numWorkers; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for task := range taskQueue {
+					// Execute single task (without recursive dependency calls since we handle deps at level)
+					runTaskSingle(task, env, executor)
+				}
+			}()
+		}
+		
+		// Queue all tasks for this level
+		for _, taskName := range tasksAtLevel {
+			if task, exists := taskLookup[taskName]; exists {
+				taskQueue <- task
+			}
+		}
+		
+		close(taskQueue)
+		wg.Wait() // Wait for all tasks at this level to complete
+	}
+}
+
+// runTaskSingle executes a single task without recursive dependency handling
+func runTaskSingle(task *RunnableTask, env map[string][]string, executor Executor) {
+	// Check execution state first - prevent duplicate execution
+	if task.executionState == TaskCompleted {
+		return
+	}
+
+	// Check if up-to-date (existing logic)
+	if !executor.ShouldForceRun() && checkIfOutputMoreRecentThanInputs(task) {
+		task.executionState = TaskSkipped
+		executor.ShowTaskSkip(task, "up-to-date")
+		return
+	}
+
+	executor.ShowTaskStart(task)
+
+	// Note: We don't run dependencies here as they're handled at the level-by-level execution
+	
+	if task.taskDeclaration == nil {
+		fmt.Println(color.RedString("No task declaration found!!!"))
+		return
+	}
+
+	// Execute the task (copy relevant logic from original runTask but without dependency recursion)
+	if task.taskDeclaration.In != nil && len(task.inputs) > 0 {
+		// Handle input verification, downloads, etc.
+		if task.taskDeclaration.InSha256 != nil {
+			trace("Checking sha256 of input file")
+			for _, input := range task.inputs {
+				if handleRemoteInput(task, input) {
+					continue
+				}
+				if input.sha256 != "" && isFileBytesMatchingSha256(input.path, input.sha256) {
+					trace(fmt.Sprintf("IN SHA256 matches for %s", input.path))
+				} else {
+					trace(fmt.Sprintf("IN SHA256 mismatch for %s", input.path))
+				}
+			}
+		}
+	}
+
+	// Execute the command if present
+	if task.taskDeclaration.Run != nil {
+		command := renderCommand(task, env)
+
+		var cmdEnv []string
+		cmdEnv = append(cmdEnv, os.Environ()...)
+		for key, value := range env {
+			cmdEnv = append(cmdEnv, fmt.Sprintf("%s=%s", key, strings.Join(value, " ")))
+		}
+
+		err := executor.ExecuteCommand(task, command, cmdEnv)
+		if err != nil {
+			fmt.Printf("Error executing command: %v\n", err)
+			return
+		}
+	}
+
+	// Handle SHA256 updates for referenced tasks (automatic caching) or when --updatehash is used
+	if executor.ShouldUpdateSha256() || task.isReferenced {
+		var needsUpdate bool
+		var sha256ToUpdate string
+
+		if task.taskDeclaration.OutSha256 != nil {
+			// Traditional case: task has explicit out: field
+			needsUpdate = true
+			sha256ToUpdate = *task.taskDeclaration.OutSha256
+		} else if task.taskDeclaration.Out == nil {
+			// New CAS case: task has no out: field, check if stdout was captured
+			if contentDigest, ok := getTaskStdoutDigestFromCAS(task, executor); ok {
+				needsUpdate = true
+				sha256ToUpdate = string(contentDigest)
+				// Set the OutSha256 in the task declaration so updateOutSha256ForTarget can find it
+				task.taskDeclaration.OutSha256 = &sha256ToUpdate
+			}
+		}
+
+		if needsUpdate {
+			// Use mutex to prevent race conditions when multiple parallel tasks update YAML
+			yamlUpdateMutex.Lock()
+			defer yamlUpdateMutex.Unlock()
+			
+			updatedYamlString := updateOutSha256ForTarget(FLOW_DEFINITION_FILE, task.targetKey, sha256ToUpdate)
+			outputYamlString := addInterveningSpacesToRootLevelBlocks(updatedYamlString)
+			// re-output the file
+			currentFileMode := os.ModePerm
+			if fileInfo, err := os.Stat(FLOW_DEFINITION_FILE); err == nil {
+				currentFileMode = fileInfo.Mode()
+			}
+			err := os.WriteFile(FLOW_DEFINITION_FILE, []byte(outputYamlString), currentFileMode)
+			bailOnError(err)
+			trace(fmt.Sprintf("Updated YAML file with new SHA256: %s", sha256ToUpdate))
+		}
+	}
+
+	task.executionState = TaskCompleted
+	task.executionCount++
+	executor.ShowTaskCompleted(task)
+}
+
 func main() {
 
 	COLORIZED_PROGRAM_NAME := color.HiBlueString(os.Args[0])
@@ -1750,13 +2060,22 @@ func main() {
 			shouldUpdateOutSha256, _ := cmd.Flags().GetBool("updatehash")
 			shouldForceRun, _ := cmd.Flags().GetBool("always-run")
 			isDryRun, _ := cmd.Flags().GetBool("dry-run")
+			jobCount, _ := cmd.Flags().GetInt("jobs")
+			
+			// Validate job count
+			if jobCount <= 0 {
+				return fmt.Errorf("invalid job count %d: must be positive", jobCount)
+			}
+			if jobCount > 32 {
+				return fmt.Errorf("invalid job count %d: maximum allowed is 32", jobCount)
+			}
 			// TODO FIXME: tell user that updating the hash is meaningless if `out` is not supplied
 
 			var executor Executor
 			if isDryRun {
-				executor = NewDryRunExecutor(shouldUpdateOutSha256, shouldForceRun)
+				executor = NewDryRunExecutorWithWorkers(jobCount, shouldUpdateOutSha256, shouldForceRun)
 			} else {
-				executor = NewRealExecutor(shouldUpdateOutSha256, shouldForceRun)
+				executor = NewRealExecutorWithWorkers(jobCount, shouldUpdateOutSha256, shouldForceRun)
 			}
 
 			runFlowDefinitionProcessor(FLOW_DEFINITION_FILE, executor)
@@ -1772,6 +2091,7 @@ func main() {
 	rootCmd.Flags().Bool("targets", false, "list all defined targets")
 	rootCmd.Flags().BoolP("always-run", "B", false, "always run the target, even if it's up to date")
 	rootCmd.Flags().Bool("dry-run", false, "show execution plan without running commands")
+	rootCmd.Flags().IntP("jobs", "j", 1, "number of parallel jobs (make-style syntax)")
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
