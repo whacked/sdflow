@@ -824,7 +824,12 @@ func printVitalsForTask(task *RunnableTask, taskLookup map[string]*RunnableTask)
 	var upToDateString string
 	var coloringFunc func(format string, a ...interface{}) string
 	if checkIfOutputMoreRecentThanInputs(task) {
-		upToDateString = color.GreenString("current")
+		// Check if this is a CAS-cached task (has out.sha256 but no explicit out:)
+		if task.taskDeclaration.Out == nil && task.taskDeclaration.OutSha256 != nil {
+			upToDateString = color.HiCyanString("cached")
+		} else {
+			upToDateString = color.GreenString("current")
+		}
 		coloringFunc = color.HiGreenString
 	} else if task.taskDeclaration.Out == nil {
 		upToDateString = ""
