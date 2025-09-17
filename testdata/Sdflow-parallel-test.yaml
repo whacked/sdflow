@@ -1,0 +1,71 @@
+# Parallel execution test tasks - 15 independent tasks that feed into parallel-final
+# run with e.g.
+# sdflow -B -j 8 -f testdata/Sdflow-parallel-test.yaml parallel-final
+# to check
+# - parallelization
+# - sha256 hash auto-writeout
+# - rerun caching
+parallel-task-01:
+  run: echo "Task 01 starting"; sleep 0.5; echo "Task 01 completed"
+
+parallel-task-02:
+  run: echo "Task 02 starting"; sleep 0.5; echo "Task 02 completed"
+
+parallel-task-03:
+  run: echo "Task 03 starting"; sleep 0.5; echo "Task 03 completed"
+
+parallel-task-04:
+  run: echo "Task 04 starting"; sleep 0.5; echo "Task 04 completed"
+
+parallel-task-05:
+  run: echo "Task 05 starting"; sleep 0.5; echo "Task 05 completed"
+
+parallel-task-06:
+  run: echo "Task 06 starting"; sleep 0.5; echo "Task 06 completed"
+
+parallel-task-07:
+  run: echo "Task 07 starting"; sleep 0.5; echo "Task 07 completed"
+
+parallel-task-08:
+  run: echo "Task 08 starting"; sleep 0.5; echo "Task 08 completed"
+
+parallel-task-09:
+  run: echo "Task 09 starting"; sleep 0.5; echo "Task 09 completed"
+
+parallel-task-10:
+  run: echo "Task 10 starting"; sleep 0.5; echo "Task 10 completed"
+
+parallel-task-11:
+  run: echo "Task 11 starting"; sleep 0.5; echo "Task 11 completed"
+
+parallel-task-12:
+  run: echo "Task 12 starting"; sleep 0.5; echo "Task 12 completed"
+
+parallel-task-13:
+  run: echo "Task 13 starting"; sleep 0.5; echo "Task 13 completed"
+
+parallel-task-14:
+  run: echo "Task 14 starting"; sleep 0.5; echo "Task 14 completed"
+
+parallel-task-15:
+  run: echo "Task 15 starting"; sleep 0.5; echo "Task 15 completed"
+
+# Common destination task that depends on all 15 parallel tasks
+parallel-final:
+  in:
+    - parallel-task-01
+    - parallel-task-02
+    - parallel-task-03
+    - parallel-task-04
+    - parallel-task-05
+    - parallel-task-06
+    - parallel-task-07
+    - parallel-task-08
+    - parallel-task-09
+    - parallel-task-10
+    - parallel-task-11
+    - parallel-task-12
+    - parallel-task-13
+    - parallel-task-14
+    - parallel-task-15
+  run: echo "All parallel tasks completed! Final task running"; date

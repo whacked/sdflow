@@ -71,11 +71,6 @@ func NewRealExecutorWithWorkers(workerCount int, updateSha256, forceRun bool) *R
 }
 
 func (e *RealExecutor) ExecuteCommand(task *RunnableTask, command string, env []string) error {
-	fmt.Fprint(
-		os.Stderr,
-		color.GreenString("Command: %s\n", command),
-	)
-
 	cmd := exec.Command("bash", "-c", command)
 	cmd.Stderr = os.Stderr
 	cmd.Env = env
@@ -583,7 +578,8 @@ func getTaskStdoutDigestFromCAS(task *RunnableTask, executor Executor) (ContentD
 	return "", false
 }
 
-// isTaskReference checks if an input string refers to a task name rather than a file path
+// isTaskReference checks if an input string refers to a task name for CAS caching
+// (only tasks without explicit out: fields that capture stdout to CAS)
 func isTaskReference(input string, taskLookup map[string]*RunnableTask) bool {
 	// Task references should:
 	// 1. Exist in the task lookup
@@ -598,6 +594,27 @@ func isTaskReference(input string, taskLookup map[string]*RunnableTask) bool {
 	if referencedTask, exists := taskLookup[input]; exists {
 		// Task exists, check if it has no explicit out: field (stdout capture only)
 		return referencedTask.taskDeclaration != nil && referencedTask.taskDeclaration.Out == nil
+	}
+
+	return false
+}
+
+// isTaskDependency checks if an input string refers to a task name for dependency resolution
+// (any task name that can be referenced as a dependency)
+func isTaskDependency(input string, taskLookup map[string]*RunnableTask) bool {
+	// Task dependencies should:
+	// 1. Exist in the task lookup
+	// 2. Not be a file path (no path separators or extensions)
+	// 3. Be a real task name (not an output file alias)
+
+	if strings.Contains(input, "/") || strings.Contains(input, ".") {
+		// Contains path separators or file extensions, likely a file path
+		return false
+	}
+
+	if referencedTask, exists := taskLookup[input]; exists {
+		// Task exists, check if it's a real task (has taskDeclaration) and not just an output file alias
+		return referencedTask.taskDeclaration != nil && referencedTask.targetName == input
 	}
 
 	return false
@@ -1615,7 +1632,7 @@ func processTaskReferences(taskLookup map[string]*RunnableTask, taskDependencies
 		}
 
 		for _, input := range task.inputs {
-			if isTaskReference(input.originalInput, taskLookup) {
+			if isTaskDependency(input.originalInput, taskLookup) {
 				// Mark this input as a task reference
 				input.taskReference = input.originalInput
 
@@ -1690,8 +1707,8 @@ func addImplicitDependencies(taskLookup map[string]*RunnableTask, taskDependenci
 				}
 			}
 
-			// Check for task references (tasks without explicit out: field)
-			if isTaskReference(input.path, taskLookup) {
+			// Check for task references (any task name)
+			if isTaskDependency(input.path, taskLookup) {
 				producingTaskName := input.path
 
 				// Check if this dependency already exists to avoid duplicates
