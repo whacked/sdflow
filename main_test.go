@@ -1351,7 +1351,7 @@ compute-task:
 		executor := NewRealExecutor(false, false)
 
 		// This should work now that runFlowDefinitionProcessor accepts an executor
-		runFlowDefinitionProcessor(flowPath, executor)
+		runFlowDefinitionProcessor(flowPath, executor, []string{})
 
 		// Note: This test will actually try to download and execute commands
 		// In a real test environment, we might want to mock the network calls
@@ -1361,7 +1361,7 @@ compute-task:
 		executor := NewDryRunExecutor(false, false)
 
 		// This should work and show execution plan without side effects
-		runFlowDefinitionProcessor(flowPath, executor)
+		runFlowDefinitionProcessor(flowPath, executor, []string{})
 
 		// Dry run should complete without errors and without actual file operations
 	})

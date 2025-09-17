@@ -1712,11 +1712,11 @@ func addImplicitDependencies(taskLookup map[string]*RunnableTask, taskDependenci
 	}
 }
 
-func runFlowDefinitionProcessor(flowDefinitionFilePath string, executor Executor) {
+func runFlowDefinitionProcessor(flowDefinitionFilePath string, executor Executor, args []string) {
 
 	parsedFlowDefinition := parseFlowDefinitionFile(flowDefinitionFilePath)
 
-	if len(os.Args) == 1 {
+	if len(args) == 0 {
 		// Collect and sort target identifiers
 		var targetIdentifiers []string
 		for targetIdentifier := range parsedFlowDefinition.taskDependencies {
@@ -1736,8 +1736,8 @@ func runFlowDefinitionProcessor(flowDefinitionFilePath string, executor Executor
 			task := parsedFlowDefinition.taskLookup[targetIdentifier]
 			printVitalsForTask(task, parsedFlowDefinition.taskLookup)
 		}
-	} else if len(os.Args) > 1 {
-		lastArg := os.Args[len(os.Args)-1]
+	} else if len(args) > 0 {
+		lastArg := args[len(args)-1]
 		// see if lastarg is in our lookup
 		if _, ok := parsedFlowDefinition.taskLookup[lastArg]; !ok {
 			fmt.Printf("Task %s not found\n", lastArg)
@@ -2108,6 +2108,11 @@ func main() {
 		Use:   fmt.Sprintf("%s %s", COLORIZED_PROGRAM_NAME, color.CyanString("[flags]")),
 		Short: "flow runner",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Check for explicit file flag and override FLOW_DEFINITION_FILE if provided
+			fileFlag, _ := cmd.Flags().GetString("file")
+			if fileFlag != "" {
+				FLOW_DEFINITION_FILE = fileFlag
+			}
 
 			targetsFlag, _ := cmd.Flags().GetBool("targets")
 			if targetsFlag {
@@ -2163,7 +2168,7 @@ func main() {
 				executor = NewRealExecutorWithWorkers(jobCount, shouldUpdateOutSha256, shouldForceRun)
 			}
 
-			runFlowDefinitionProcessor(FLOW_DEFINITION_FILE, executor)
+			runFlowDefinitionProcessor(FLOW_DEFINITION_FILE, executor, args)
 			return nil
 		},
 	}
@@ -2177,6 +2182,7 @@ func main() {
 	rootCmd.Flags().BoolP("always-run", "B", false, "always run the target, even if it's up to date")
 	rootCmd.Flags().Bool("dry-run", false, "show execution plan without running commands")
 	rootCmd.Flags().IntP("jobs", "j", 1, "number of parallel jobs (make-style syntax)")
+	rootCmd.Flags().StringP("file", "f", "", "specify flow definition file (default: auto-discover Sdflow.yaml or sdflow.yaml)")
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
