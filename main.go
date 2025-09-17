@@ -791,6 +791,21 @@ func printVitalsForTask(task *RunnableTask) {
 		)
 	}
 
+	// Add run command if present
+	if task.taskDeclaration.Run != nil {
+		runCommand := *task.taskDeclaration.Run
+		// Show only first line if multi-line, with ellipsis
+		if strings.Contains(runCommand, "\n") {
+			lines := strings.Split(runCommand, "\n")
+			runCommand = lines[0] + "..."
+		}
+		fmt.Fprintf(os.Stderr,
+			"├─◁ %s\n",
+			color.YellowString("%s", runCommand),
+		)
+	}
+
+	fmt.Fprintf(os.Stderr, "│\n")
 	fmt.Fprintf(os.Stderr, "╰─▶ ")
 	if task.taskDeclaration.Out == nil {
 		fmt.Fprint(
