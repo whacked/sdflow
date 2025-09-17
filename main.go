@@ -36,7 +36,7 @@ type Executor interface {
 	WorkerCount() int
 
 	// Output methods for different execution phases
-	ShowTaskStart(task *RunnableTask)
+	ShowTaskStart(task *RunnableTask, taskLookup map[string]*RunnableTask)
 	ShowTaskSkip(task *RunnableTask, reason string)
 	ShowTaskCompleted(task *RunnableTask)
 
@@ -199,10 +199,10 @@ func (e *RealExecutor) WorkerCount() int {
 	return e.workerCount
 }
 
-func (e *RealExecutor) ShowTaskStart(task *RunnableTask) {
+func (e *RealExecutor) ShowTaskStart(task *RunnableTask, taskLookup map[string]*RunnableTask) {
 	trace(fmt.Sprintf(
 		"Running task: %+v (%d dependencies)\n", task.targetName, len(task.taskDependencies)))
-	printVitalsForTask(task)
+	printVitalsForTask(task, taskLookup)
 }
 
 func (e *RealExecutor) ShowTaskSkip(task *RunnableTask, reason string) {
@@ -271,11 +271,11 @@ func (e *DryRunExecutor) WorkerCount() int {
 	return e.workerCount
 }
 
-func (e *DryRunExecutor) ShowTaskStart(task *RunnableTask) {
+func (e *DryRunExecutor) ShowTaskStart(task *RunnableTask, taskLookup map[string]*RunnableTask) {
 	fmt.Fprint(
 		os.Stderr,
 		tagDryRun(fmt.Sprintf("Running task: %+v (%d dependencies)\n", task.targetName, len(task.taskDependencies))))
-	printVitalsForTask(task)
+	printVitalsForTask(task, taskLookup)
 }
 
 func (e *DryRunExecutor) ShowTaskSkip(task *RunnableTask, reason string) {
@@ -640,6 +640,7 @@ type RunnableTaskInput struct {
 	mtime         int64
 	alias         string // New field for named inputs
 	taskReference string // If this input is a task reference, store the task name
+	originalInput string // The original input value before path processing
 }
 
 type RunnableTask struct {
@@ -761,7 +762,61 @@ func checkIfOutputMoreRecentThanInputs(task *RunnableTask) bool {
 	return false
 }
 
-func printVitalsForTask(task *RunnableTask) {
+// noColorString returns the formatted string without any color codes
+func noColorString(format string, a ...interface{}) string {
+	return fmt.Sprintf(format, a...)
+}
+
+// checkIfInputCausesStaleness determines if a specific input file is newer than the task's output
+func checkIfInputCausesStaleness(task *RunnableTask, taskInput *RunnableTaskInput) bool {
+	if task.taskDeclaration == nil {
+		return false
+	}
+
+	// Handle tasks with explicit output files
+	if task.taskDeclaration.Out != nil {
+		// Check if output file exists
+		outputStat, err := os.Stat(*task.taskDeclaration.Out)
+		if err != nil {
+			// Output file doesn't exist, so any input file causes staleness
+			return true
+		}
+
+		outputTime := outputStat.ModTime().Unix()
+
+		// Check if this specific input is newer than output
+		if inputStat, err := os.Stat(taskInput.path); err == nil {
+			inputTime := inputStat.ModTime().Unix()
+			return outputTime <= inputTime
+		}
+	}
+
+	// For CAS-cached tasks, we can't easily determine individual input staleness
+	// since the output is based on content hash, not timestamps
+	return false
+}
+
+func getInputColor(taskInput *RunnableTaskInput, taskLookup map[string]*RunnableTask) func(format string, a ...interface{}) string {
+	// Non-task references use default terminal color (no color codes)
+	if taskInput.taskReference == "" {
+		return noColorString
+	}
+
+	// Look up the referenced task
+	referencedTask, exists := taskLookup[taskInput.taskReference]
+	if !exists {
+		return noColorString // Fallback to default if task not found
+	}
+
+	// Check if referenced task is up-to-date
+	if checkIfOutputMoreRecentThanInputs(referencedTask) {
+		return color.GreenString // Current/up-to-date
+	} else {
+		return color.RedString // Stale/needs update
+	}
+}
+
+func printVitalsForTask(task *RunnableTask, taskLookup map[string]*RunnableTask) {
 	if task.taskDeclaration == nil {
 		return
 	}
@@ -772,8 +827,8 @@ func printVitalsForTask(task *RunnableTask) {
 		upToDateString = color.GreenString("current")
 		coloringFunc = color.HiGreenString
 	} else if task.taskDeclaration.Out == nil {
-		upToDateString = color.MagentaString("always")
-		coloringFunc = color.HiMagentaString
+		upToDateString = ""
+		coloringFunc = color.CyanString
 	} else {
 		upToDateString = color.RedString("stale")
 		coloringFunc = color.HiRedString
@@ -784,11 +839,25 @@ func printVitalsForTask(task *RunnableTask) {
 		coloringFunc("%s", task.targetName),
 	)
 
+	// Determine if task is stale (for staleness markers)
+	isTaskStale := task.taskDeclaration.Out != nil && !checkIfOutputMoreRecentThanInputs(task)
+
 	for _, taskInput := range task.inputs {
-		fmt.Fprintf(os.Stderr,
-			"├ %s\n",
-			color.WhiteString("%s", normalizePathForDisplay(taskInput.path)),
-		)
+		inputPath := normalizePathForDisplay(taskInput.path)
+
+		// Check if this input causes staleness and override color
+		if isTaskStale && checkIfInputCausesStaleness(task, taskInput) {
+			fmt.Fprintf(os.Stderr,
+				"├ %s\n",
+				color.HiMagentaString("%s", inputPath),
+			)
+		} else {
+			colorFunc := getInputColor(taskInput, taskLookup)
+			fmt.Fprintf(os.Stderr,
+				"├ %s\n",
+				colorFunc("%s", inputPath),
+			)
+		}
 	}
 
 	// Add run command if present
@@ -818,7 +887,9 @@ func printVitalsForTask(task *RunnableTask) {
 			color.HiBlueString("%s", normalizePathForDisplay(*task.taskDeclaration.Out)),
 		)
 	}
-	fmt.Fprintf(os.Stderr, " (%s)", upToDateString)
+	if upToDateString != "" {
+		fmt.Fprintf(os.Stderr, " (%s)", upToDateString)
+	}
 
 	fmt.Fprintf(os.Stderr, "\n\n")
 }
@@ -1063,7 +1134,7 @@ func handleRemoteInput(task *RunnableTask, input *RunnableTaskInput) bool {
 	}
 }
 
-func runTask(task *RunnableTask, env map[string][]string, executor Executor) {
+func runTask(task *RunnableTask, env map[string][]string, executor Executor, taskLookup map[string]*RunnableTask) {
 
 	// Check execution state first - prevent duplicate execution
 	if task.executionState == TaskCompleted {
@@ -1077,11 +1148,11 @@ func runTask(task *RunnableTask, env map[string][]string, executor Executor) {
 		return
 	}
 
-	executor.ShowTaskStart(task)
+	executor.ShowTaskStart(task, taskLookup)
 
 	for _, dep := range task.taskDependencies {
 		trace(fmt.Sprintf("Running dependency: %s", dep.targetName))
-		runTask(dep, env, executor)
+		runTask(dep, env, executor, taskLookup)
 	}
 
 	if task.taskDeclaration == nil {
@@ -1315,8 +1386,9 @@ func createTaskFromRunnableKeyVals(
 					inString := getPathRelativeToCwd(expandedInput)
 					inputStrings = append(inputStrings, fmt.Sprintf("\"%s\"", inString))
 					task.inputs = append(task.inputs, &RunnableTaskInput{
-						path:  inString,
-						alias: inString,
+						path:          inString,
+						alias:         inString,
+						originalInput: expandedInput,
 					})
 				}
 			}
@@ -1326,12 +1398,14 @@ func createTaskFromRunnableKeyVals(
 			// map of alias -> input path
 			var inputStrings []string
 			for alias, inItem := range v {
+				originalInput := inItem.(string)
 				inString := getPathRelativeToCwd(
-					*substituteWithContext(inItem.(string), convertArrayMapToStringMap(executionEnv)))
+					*substituteWithContext(originalInput, convertArrayMapToStringMap(executionEnv)))
 				inputStrings = append(inputStrings, fmt.Sprintf("\"%s\"", inString))
 				task.inputs = append(task.inputs, &RunnableTaskInput{
-					path:  inString,
-					alias: alias,
+					path:          inString,
+					alias:         alias,
+					originalInput: originalInput,
 				})
 			}
 			concatenatedInputs := strings.Join(inputStrings, " ")
@@ -1346,7 +1420,8 @@ func createTaskFromRunnableKeyVals(
 				inString := getPathRelativeToCwd(expandedInput)
 				inputStrings = append(inputStrings, fmt.Sprintf("\"%s\"", inString))
 				task.inputs = append(task.inputs, &RunnableTaskInput{
-					path: inString,
+					path:          inString,
+					originalInput: expandedInput,
 				})
 			}
 
@@ -1535,12 +1610,12 @@ func processTaskReferences(taskLookup map[string]*RunnableTask, taskDependencies
 		}
 
 		for _, input := range task.inputs {
-			if isTaskReference(input.path, taskLookup) {
+			if isTaskReference(input.originalInput, taskLookup) {
 				// Mark this input as a task reference
-				input.taskReference = input.path
+				input.taskReference = input.originalInput
 
 				// Mark the referenced task as being referenced
-				if referencedTask, exists := taskLookup[input.path]; exists {
+				if referencedTask, exists := taskLookup[input.originalInput]; exists {
 					referencedTask.isReferenced = true
 				}
 
@@ -1551,14 +1626,14 @@ func processTaskReferences(taskLookup map[string]*RunnableTask, taskDependencies
 				// but we'll do it here explicitly for task references)
 				dependencyExists := false
 				for _, existingDep := range taskDependencies[taskName] {
-					if existingDep == input.path {
+					if existingDep == input.originalInput {
 						dependencyExists = true
 						break
 					}
 				}
 
 				if !dependencyExists {
-					taskDependencies[taskName] = append(taskDependencies[taskName], input.path)
+					taskDependencies[taskName] = append(taskDependencies[taskName], input.originalInput)
 				}
 			}
 		}
@@ -1654,7 +1729,7 @@ func runFlowDefinitionProcessor(flowDefinitionFilePath string, executor Executor
 		// Print tasks in sorted order
 		for _, targetIdentifier := range targetIdentifiers {
 			task := parsedFlowDefinition.taskLookup[targetIdentifier]
-			printVitalsForTask(task)
+			printVitalsForTask(task, parsedFlowDefinition.taskLookup)
 		}
 	} else if len(os.Args) > 1 {
 		lastArg := os.Args[len(os.Args)-1]
@@ -1667,9 +1742,9 @@ func runFlowDefinitionProcessor(flowDefinitionFilePath string, executor Executor
 
 			// Use parallel execution if more than 1 worker
 			if executor.WorkerCount() > 1 {
-				runTaskParallel(task, parsedFlowDefinition.executionEnv, executor)
+				runTaskParallel(task, parsedFlowDefinition.executionEnv, executor, parsedFlowDefinition.taskLookup)
 			} else {
-				runTask(task, parsedFlowDefinition.executionEnv, executor)
+				runTask(task, parsedFlowDefinition.executionEnv, executor, parsedFlowDefinition.taskLookup)
 			}
 
 			// Handle SHA256 updates for both explicit out: fields and CAS-captured stdout
@@ -1803,12 +1878,12 @@ func groupTasksByLevel(levels map[string]int) map[int][]string {
 }
 
 // runTaskParallel is the parallel version of runTask
-func runTaskParallel(task *RunnableTask, env map[string][]string, executor Executor) {
+func runTaskParallel(task *RunnableTask, env map[string][]string, executor Executor, taskLookup map[string]*RunnableTask) {
 	workerCount := executor.WorkerCount()
 
 	// If single worker, just use sequential execution
 	if workerCount == 1 {
-		runTask(task, env, executor)
+		runTask(task, env, executor, taskLookup)
 		return
 	}
 
@@ -1816,16 +1891,14 @@ func runTaskParallel(task *RunnableTask, env map[string][]string, executor Execu
 	allTasks := collectAllTaskDependencies(task)
 	if len(allTasks) == 1 {
 		// Only this task, no dependencies - just run it
-		runTask(task, env, executor)
+		runTask(task, env, executor, taskLookup)
 		return
 	}
 
 	// Create task dependency map
 	taskDeps := make(map[string][]string)
-	taskLookup := make(map[string]*RunnableTask)
 
 	for _, t := range allTasks {
-		taskLookup[t.targetName] = t
 		var deps []string
 		for _, dep := range t.taskDependencies {
 			deps = append(deps, dep.targetName)
@@ -1900,7 +1973,7 @@ func executeTasksByLevel(tasksByLevel map[int][]string, taskLookup map[string]*R
 				defer wg.Done()
 				for task := range taskQueue {
 					// Execute single task (without recursive dependency calls since we handle deps at level)
-					runTaskSingle(task, env, executor)
+					runTaskSingle(task, env, executor, taskLookup)
 				}
 			}()
 		}
@@ -1918,7 +1991,7 @@ func executeTasksByLevel(tasksByLevel map[int][]string, taskLookup map[string]*R
 }
 
 // runTaskSingle executes a single task without recursive dependency handling
-func runTaskSingle(task *RunnableTask, env map[string][]string, executor Executor) {
+func runTaskSingle(task *RunnableTask, env map[string][]string, executor Executor, taskLookup map[string]*RunnableTask) {
 	// Check execution state first - prevent duplicate execution
 	if task.executionState == TaskCompleted {
 		return
@@ -1931,7 +2004,7 @@ func runTaskSingle(task *RunnableTask, env map[string][]string, executor Executo
 		return
 	}
 
-	executor.ShowTaskStart(task)
+	executor.ShowTaskStart(task, taskLookup)
 
 	// Note: We don't run dependencies here as they're handled at the level-by-level execution
 

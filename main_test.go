@@ -707,7 +707,7 @@ prog_2:
 		t.Fatalf("task 'prog_1' not found")
 	}
 
-	runTask(task1, pfd.executionEnv, NewRealExecutor(false, false))
+	runTask(task1, pfd.executionEnv, NewRealExecutor(false, false), pfd.taskLookup)
 
 	// Verify expected execution counts after first run
 	expectedAfterProg1 := map[string]int{
@@ -723,7 +723,7 @@ prog_2:
 		t.Fatalf("task 'prog_2' not found")
 	}
 
-	runTask(task2, pfd.executionEnv, NewRealExecutor(false, false))
+	runTask(task2, pfd.executionEnv, NewRealExecutor(false, false), pfd.taskLookup)
 
 	// Verify final execution counts
 	expectedAfterProg2 := map[string]int{
@@ -1236,7 +1236,7 @@ func TestExecutorTaskOutputMethods(t *testing.T) {
 	for _, tt := range executors {
 		t.Run(tt.name, func(t *testing.T) {
 			// These should not panic, even though they're not implemented
-			tt.executor.ShowTaskStart(task)
+			tt.executor.ShowTaskStart(task, make(map[string]*RunnableTask))
 			tt.executor.ShowTaskSkip(task, "up-to-date")
 			tt.executor.ShowTaskCompleted(task)
 		})
@@ -1259,7 +1259,7 @@ simple-task:
 		executor := NewRealExecutor(false, false)
 
 		// This should work now that runTask accepts an executor
-		runTask(task, pfd.executionEnv, executor)
+		runTask(task, pfd.executionEnv, executor, pfd.taskLookup)
 
 		// Verify task was executed
 		if task.executionState != TaskCompleted {
@@ -1278,7 +1278,7 @@ simple-task:
 		executor := NewDryRunExecutor(false, false)
 
 		// This should work now that runTask accepts an executor
-		runTask(task, pfd.executionEnv, executor)
+		runTask(task, pfd.executionEnv, executor, pfd.taskLookup)
 
 		// Verify task was "executed" in dry run mode
 		if task.executionState != TaskCompleted {
@@ -1505,7 +1505,7 @@ test-parallel-simple:
 		}
 		
 		start := time.Now()
-		runTaskParallel(task, parsedFlow.executionEnv, executor)
+		runTaskParallel(task, parsedFlow.executionEnv, executor, parsedFlow.taskLookup)
 		duration := time.Since(start)
 		
 		// Should complete successfully
@@ -1665,7 +1665,7 @@ parallel-sha256-test:
 		}
 		
 		// Execute with parallel execution
-		runTaskParallel(task, parsedFlow.executionEnv, executor)
+		runTaskParallel(task, parsedFlow.executionEnv, executor, parsedFlow.taskLookup)
 		
 		// Verify task completed successfully
 		if task.executionState != TaskCompleted {
