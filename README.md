@@ -27,22 +27,40 @@ Anything else, use a more mature tool.
 
 # usage
 
-`sdflow`
+`sdflow [-f flowfile] [taskname]`
 
-by default, it looks for a file called `Sdflow.yaml` in the current working directory
+by default, it looks for a file called `Sdflow.yaml` (or `{sdflow,Sdflow}.{yml,jsonnet,json}`) in the current working directory.
+
+## task definition
+
+```yaml
+build:
+  in: # currently sha256 is only supported for single input
+    - main.go
+    - ./runnable.go
+    - util.go
+    - version.go
+    - resources/bash_autocomplete.sh
+    - resources/zsh_autocomplete.sh
+  out: build/bin/sdflow
+  # make dirs for nix build compat
+  run: echo INPUTS; echo $in; mkdir -p $(dirname $out); go build -o $out ${in[0]} ${in[1]} ${in[2]} ${in[3]}; ln -sf ./build ./result
+```
+
+## example overview
 
 ```
-    ╭─❮❮ build ❯❯
-    ├ main.go
-    ├ runnable.go
-    ├ util.go
-    ╰─▶ build/bin/sdflow (stale)
+╭─❮❮ build ❯❯
+├ ./main.go
+├ ./runnable.go
+├ ./util.go
+├ ./version.go
+├ ./resources/bash_autocomplete.sh
+├ ./resources/zsh_autocomplete.sh
+├─◁ echo INPUTS; echo $in; mkdir -p $(dirname $out); go build -o $out ${in[0]} ${in[1]} ${in[2]} ${in[3]}; ln -sf ./build ./result
+│
+╰─▶ ./build/bin/sdflow (current)
 
-    ╭─❮❮ example-s3-loader ❯❯
-    ├ s3://answer-reformulation-pds/README.txt
-    ╰─▶ <STDOUT> (always)
-
-    ...
 ```
 
 see the included file for an example, which also includes the build command for itself
