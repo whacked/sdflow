@@ -41,9 +41,11 @@ build:
     - main.go
     - ./runnable.go
     - util.go
+    - resources/bash_autocomplete.sh
+    - resources/zsh_autocomplete.sh
   out: build/bin/sdflow
   # make dirs for nix build compat
-  run: mkdir -p $(dirname $out); go build -o $out $in; ln -sf ./build ./result
+  run: echo INPUTS; echo $in; mkdir -p $(dirname $out); go build -o $out ${in[0]} ${in[1]} ${in[2]}; ln -sf ./build ./result
 
 ./runnable.go:
   in:
