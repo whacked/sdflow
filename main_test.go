@@ -89,6 +89,28 @@ func TestSubstituteWithContext(t *testing.T) {
 	}
 }
 
+func TestEscapeMechanism(t *testing.T) {
+	ctx := map[string]string{"VAR": "value"}
+	
+	// Test that $$ becomes $
+	out := substituteWithContext("echo $$HOME", ctx)
+	if *out != "echo $HOME" {
+		t.Fatalf("want %q, got %q", "echo $HOME", *out)
+	}
+	
+	// Test that ${VAR} is substituted but $$NF becomes $NF
+	out2 := substituteWithContext("awk '{print $$NF}' ${VAR}", ctx)
+	if *out2 != "awk '{print $NF}' value" {
+		t.Fatalf("want %q, got %q", "awk '{print $NF}' value", *out2)
+	}
+	
+	// Test multiple escapes
+	out3 := substituteWithContext("$$1 $$2 ${VAR} $$3", ctx)
+	if *out3 != "$1 $2 value $3" {
+		t.Fatalf("want %q, got %q", "$1 $2 value $3", *out3)
+	}
+}
+
 func stringSliceToInterface(slice []string) []interface{} {
 	out := make([]interface{}, len(slice))
 	for i, v := range slice {

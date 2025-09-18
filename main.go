@@ -934,11 +934,17 @@ func printVitalsForTask(task *RunnableTask, taskLookup map[string]*RunnableTask)
 }
 
 func substituteWithContext(s string, context map[string]string) *string {
+	// Handle $$ escape sequences by temporarily replacing them
+	const placeholder = "___ESCAPED_DOLLAR___"
+	escapedTemplate := strings.ReplaceAll(s, "$$", placeholder)
+
 	mapper := func(varName string) string {
 		return context[varName]
 	}
 
-	substituted := os.Expand(s, mapper)
+	expanded := os.Expand(escapedTemplate, mapper)
+	// Restore escaped dollars
+	substituted := strings.ReplaceAll(expanded, placeholder, "$")
 	return &substituted
 }
 
@@ -2185,7 +2191,6 @@ func runTaskSingle(task *RunnableTask, env map[string][]string, executor Executo
 }
 
 func main() {
-
 	COLORIZED_PROGRAM_NAME := color.HiBlueString(os.Args[0])
 	FLOW_DEFINITION_FILE = discoverFlowDefinitionFile()
 	if os.Getenv("SDFLOW_CACHE_DIRECTORY") != "" {
@@ -2201,6 +2206,12 @@ func main() {
 			fileFlag, _ := cmd.Flags().GetString("file")
 			if fileFlag != "" {
 				FLOW_DEFINITION_FILE = fileFlag
+			}
+
+			versionFlag, _ := cmd.Flags().GetBool("version")
+			if versionFlag {
+				fmt.Println(version)
+				return nil
 			}
 
 			targetsFlag, _ := cmd.Flags().GetBool("targets")
@@ -2272,6 +2283,7 @@ func main() {
 	rootCmd.Flags().Bool("dry-run", false, "show execution plan without running commands")
 	rootCmd.Flags().IntP("jobs", "j", 1, "number of parallel jobs (make-style syntax)")
 	rootCmd.Flags().StringP("file", "f", "", "specify flow definition file (default: auto-discover {Sdflow,sdflow}.{yaml,yml,jsonnet,json})")
+	rootCmd.Flags().BoolP("version", "v", false, "show version information")
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)

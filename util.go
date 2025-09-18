@@ -400,8 +400,12 @@ func prepareExpandableTemplate(template string, executionEnv map[string][]string
 }
 
 func expandVariables(template string, executionEnv map[string][]string) string {
+	// Handle $$ escape sequences by temporarily replacing them
+	const placeholder = "___ESCAPED_DOLLAR___"
+	escapedTemplate := strings.ReplaceAll(template, "$$", placeholder)
+	
 	// First pass: prepare ${VAR[i]} syntax for os.Expand
-	preparedTemplate := prepareExpandableTemplate(template, executionEnv)
+	preparedTemplate := prepareExpandableTemplate(escapedTemplate, executionEnv)
 	
 	// Create a flat environment map for os.Expand
 	flatEnv := make(map[string]string)
@@ -416,12 +420,15 @@ func expandVariables(template string, executionEnv map[string][]string) string {
 	}
 	
 	// Second pass: use os.Expand for standard ${VAR} syntax
-	return os.Expand(preparedTemplate, func(key string) string {
+	expanded := os.Expand(preparedTemplate, func(key string) string {
 		if value, exists := flatEnv[key]; exists {
 			return value
 		}
 		return ""
 	})
+	
+	// Third pass: restore escaped dollars
+	return strings.ReplaceAll(expanded, placeholder, "$")
 }
 
 func convertArrayMapToStringMap(arrayEnv map[string][]string) map[string]string {
