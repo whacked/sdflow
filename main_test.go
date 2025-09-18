@@ -1372,6 +1372,63 @@ func stringPtr(s string) *string {
 	return &s
 }
 
+func TestJsonnetJsonParsing(t *testing.T) {
+	// Test JSON parsing
+	t.Run("JSON parsing", func(t *testing.T) {
+		jsonContent := `{
+			"version_string": "1.0.0",
+			"test-task": {
+				"run": "echo 'Hello JSON'"
+			}
+		}`
+		
+		pfd := parseFlowDefinitionSource(jsonContent)
+		
+		if pfd == nil {
+			t.Fatal("Failed to parse JSON content")
+		}
+		
+		if len(pfd.taskLookup) == 0 {
+			t.Fatal("No tasks found in parsed JSON")
+		}
+		
+		testTask, exists := pfd.taskLookup["test-task"]
+		if !exists {
+			t.Fatal("test-task not found in parsed JSON")
+		}
+		
+		if testTask.taskDeclaration.Run == nil {
+			t.Fatal("Run command not found in test-task")
+		}
+		
+		expectedRun := "echo 'Hello JSON'"
+		if *testTask.taskDeclaration.Run != expectedRun {
+			t.Fatalf("Expected run command '%s', got '%s'", expectedRun, *testTask.taskDeclaration.Run)
+		}
+	})
+	
+	// Test file type detection
+	t.Run("File type detection", func(t *testing.T) {
+		tests := []struct {
+			filename string
+			expected string
+		}{
+			{"test.yaml", "yaml"},
+			{"test.yml", "yaml"},
+			{"test.json", "json"},
+			{"test.jsonnet", "jsonnet"},
+			{"test", "yaml"}, // fallback
+		}
+		
+		for _, tt := range tests {
+			result := detectFileType(tt.filename)
+			if result != tt.expected {
+				t.Errorf("detectFileType(%s) = %s, expected %s", tt.filename, result, tt.expected)
+			}
+		}
+	})
+}
+
 // Parallel execution tests
 
 func TestParallelExecutorConstructors(t *testing.T) {

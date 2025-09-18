@@ -22,6 +22,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/fatih/color"
+	"github.com/google/go-jsonnet"
 	"github.com/santhosh-tekuri/jsonschema/v5"
 	yaml "gopkg.in/yaml.v3"
 )
@@ -71,6 +72,11 @@ func NewRealExecutorWithWorkers(workerCount int, updateSha256, forceRun bool) *R
 }
 
 func (e *RealExecutor) ExecuteCommand(task *RunnableTask, command string, env []string) error {
+	fmt.Fprint(
+		os.Stderr,
+		color.GreenString("Command: %s\n", command),
+	)
+
 	cmd := exec.Command("bash", "-c", command)
 	cmd.Stderr = os.Stderr
 	cmd.Env = env
@@ -624,6 +630,12 @@ func isTaskDependency(input string, taskLookup map[string]*RunnableTask) bool {
 var FLOW_DEFINITION_FILE_CANDIDATES = []string{
 	"Sdflow.yaml",
 	"sdflow.yaml",
+	"Sdflow.yml",
+	"sdflow.yml",
+	"Sdflow.jsonnet",
+	"sdflow.jsonnet",
+	"Sdflow.json",
+	"sdflow.json",
 }
 var FLOW_DEFINITION_FILE string
 var CACHE_DIRECTORY string = ".sdflow.cache"
@@ -882,7 +894,7 @@ func printVitalsForTask(task *RunnableTask, taskLookup map[string]*RunnableTask)
 		}
 	}
 
-	// Add run command if present
+	// Add run command if present, or show NO RUN COMMAND warning
 	if task.taskDeclaration.Run != nil {
 		runCommand := *task.taskDeclaration.Run
 		// Show only first line if multi-line, with ellipsis
@@ -893,6 +905,11 @@ func printVitalsForTask(task *RunnableTask, taskLookup map[string]*RunnableTask)
 		fmt.Fprintf(os.Stderr,
 			"├─◁ %s\n",
 			color.YellowString("%s", runCommand),
+		)
+	} else {
+		fmt.Fprintf(os.Stderr,
+			"│ %s\n",
+			color.New(color.FgHiYellow, color.Bold).Sprint("!! NO RUN COMMAND !!"),
 		)
 	}
 
@@ -1495,12 +1512,67 @@ func createTaskFromRunnableKeyVals(
 	return &task
 }
 
+// detectFileType determines the file type based on extension
+func detectFileType(filePath string) string {
+	if strings.HasSuffix(filePath, ".jsonnet") {
+		return "jsonnet"
+	} else if strings.HasSuffix(filePath, ".json") {
+		return "json"
+	} else if strings.HasSuffix(filePath, ".yaml") || strings.HasSuffix(filePath, ".yml") {
+		return "yaml"
+	}
+	return "yaml" // default fallback
+}
+
+// renderJsonnetToJson processes a jsonnet file and returns JSON string
+func renderJsonnetToJson(filePath string) (string, error) {
+	vm := jsonnet.MakeVM()
+
+	// Set import callback for relative imports
+	vm.Importer(&jsonnet.FileImporter{
+		JPaths: []string{filepath.Dir(filePath)}, // Allow imports from same directory
+	})
+
+	jsonStr, err := vm.EvaluateFile(filePath)
+	if err != nil {
+		return "", err
+	}
+
+	return jsonStr, nil
+}
+
 func parseFlowDefinitionFile(flowDefinitionFilePath string) *ParsedFlowDefinition {
+	fileType := detectFileType(flowDefinitionFilePath)
 
-	flowDefinitionSource, err := os.ReadFile(flowDefinitionFilePath)
-	bailOnError(err)
+	var flowDefinitionSource string
 
-	return parseFlowDefinitionSource(string(flowDefinitionSource))
+	switch fileType {
+	case "jsonnet":
+		// Render jsonnet to JSON first
+		jsonStr, err := renderJsonnetToJson(flowDefinitionFilePath)
+		bailOnError(err)
+		flowDefinitionSource = jsonStr
+
+	case "json":
+		// Read JSON file directly
+		fileBytes, err := os.ReadFile(flowDefinitionFilePath)
+		bailOnError(err)
+		flowDefinitionSource = string(fileBytes)
+
+	case "yaml":
+		// Read YAML file directly
+		fileBytes, err := os.ReadFile(flowDefinitionFilePath)
+		bailOnError(err)
+		flowDefinitionSource = string(fileBytes)
+
+	default:
+		// Fallback to reading as YAML
+		fileBytes, err := os.ReadFile(flowDefinitionFilePath)
+		bailOnError(err)
+		flowDefinitionSource = string(fileBytes)
+	}
+
+	return parseFlowDefinitionSource(flowDefinitionSource)
 }
 
 func parseFlowDefinitionSource(flowDefinitionSource string) *ParsedFlowDefinition {
@@ -2199,7 +2271,7 @@ func main() {
 	rootCmd.Flags().BoolP("always-run", "B", false, "always run the target, even if it's up to date")
 	rootCmd.Flags().Bool("dry-run", false, "show execution plan without running commands")
 	rootCmd.Flags().IntP("jobs", "j", 1, "number of parallel jobs (make-style syntax)")
-	rootCmd.Flags().StringP("file", "f", "", "specify flow definition file (default: auto-discover Sdflow.yaml or sdflow.yaml)")
+	rootCmd.Flags().StringP("file", "f", "", "specify flow definition file (default: auto-discover {Sdflow,sdflow}.{yaml,yml,jsonnet,json})")
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)

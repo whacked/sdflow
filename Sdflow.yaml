@@ -3,7 +3,7 @@
 # global variables are any simple key-value pairs
 SCHEMAS_DIR: ./schemas
 GENERATORS_DIR: ./generators
-version_string: 0.0.1
+version_string: 2025-09-18.003
 
 
 version:
