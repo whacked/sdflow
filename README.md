@@ -31,6 +31,29 @@ Anything else, use a more mature tool.
 
 by default, it looks for a file called `Sdflow.yaml` (or `{sdflow,Sdflow}.{yml,jsonnet,json}`) in the current working directory.
 
+command line help:
+
+<!-- BEGIN_SDFLOW_HELP -->
+```
+flow runner
+
+Usage:
+  build/bin/sdflow [flags]
+
+Flags:
+  -B, --always-run           always run the target, even if it's up to date
+      --completions string   get shell completion code for the given shell type
+      --dry-run              show execution plan without running commands
+  -f, --file string          specify flow definition file (default: auto-discover {Sdflow,sdflow}.{yaml,yml,jsonnet,json})
+  -h, --help                 help for build/bin/sdflow
+  -j, --jobs int             number of parallel jobs (make-style syntax) (default 1)
+      --targets              list all defined targets
+      --updatehash           update out.sha256 for the target in the flow definition file after running the target
+      --validate             validate the flow definition file
+  -v, --version              show version information
+```
+<!-- END_SDFLOW_HELP -->
+
 ## task definition
 
 ```yaml
@@ -64,4 +87,3 @@ build:
 ```
 
 see the included file for an example, which also includes the build command for itself
-

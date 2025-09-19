@@ -84,3 +84,20 @@ example-s3-loader-to-disk:
   in: s3://answer-reformulation-pds/README.txt
   out: answer-reformulation-pds-README.txt
   out.sha256: b24b59e210cefd4d964413ac555e4573470909f8aa3d16b6b9a65ddb04490b69
+
+update-readme:
+  in: build/bin/sdflow
+  out: README.md
+  run: |
+    # Store top and bottom halves in variables
+    TOP=$$(sed '/<!-- BEGIN_SDFLOW_HELP -->/q' README.md)
+    BOTTOM=$$(sed -n '/<!-- END_SDFLOW_HELP -->/,$$p' README.md)
+
+    # Create new README with help content inserted
+    {
+      echo "$$TOP"
+      echo '```'
+      $in --help
+      echo '```'
+      echo "$$BOTTOM"
+    } > $out
