@@ -738,6 +738,33 @@ func prettyPrintTask(task *RunnableTask) {
 	}
 }
 
+func isSimpleDownloadTask(task *RunnableTask) bool {
+	if task.taskDeclaration == nil {
+		return false
+	}
+
+	// Must have no run command
+	if task.taskDeclaration.Run != nil {
+		return false
+	}
+
+	// Must have an output file
+	if task.taskDeclaration.Out == nil {
+		return false
+	}
+
+	// Must have at least one remote input
+	hasRemoteInput := false
+	for _, taskInput := range task.inputs {
+		if isRemotePath(taskInput.path) {
+			hasRemoteInput = true
+			break
+		}
+	}
+
+	return hasRemoteInput
+}
+
 func checkIfOutputMoreRecentThanInputs(task *RunnableTask) bool {
 	if task.taskDeclaration == nil {
 		return false
@@ -894,7 +921,7 @@ func printVitalsForTask(task *RunnableTask, taskLookup map[string]*RunnableTask)
 		}
 	}
 
-	// Add run command if present, or show NO RUN COMMAND warning
+	// Add run command if present, or show NO RUN COMMAND warning (except for simple download tasks)
 	if task.taskDeclaration.Run != nil {
 		runCommand := *task.taskDeclaration.Run
 		// Show only first line if multi-line, with ellipsis
@@ -906,7 +933,7 @@ func printVitalsForTask(task *RunnableTask, taskLookup map[string]*RunnableTask)
 			"├─◁ %s\n",
 			color.YellowString("%s", runCommand),
 		)
-	} else {
+	} else if !isSimpleDownloadTask(task) {
 		fmt.Fprintf(os.Stderr,
 			"│ %s\n",
 			color.New(color.FgHiYellow, color.Bold).Sprint("!! NO RUN COMMAND !!"),
