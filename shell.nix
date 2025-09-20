@@ -14,6 +14,11 @@
 }:
 
 let
+  nix_shortcuts = import (pkgs.fetchurl {
+    url = "https://raw.githubusercontent.com/whacked/setup/refs/heads/master/bash/nix_shortcuts.nix.sh";
+    hash = "sha256-jLbvJ52h12eug/5Odo04kvHqwOQRzpB9X3bUEB/vzxc=";
+  }) { inherit pkgs; };
+
   goEnv = mkGoEnv { pwd = ./.; };
   go-jsonschema = pkgs.stdenv.mkDerivation {
     name = "go-jsonschema";
@@ -53,11 +58,42 @@ pkgs.mkShell {
     pkgs.check-jsonschema
     pkgs.jsonnet
     pkgs.jq
+    pkgs.minio
+    pkgs.minio-client
     go-jsonschema
-  ];
+  ]
+  ++ nix_shortcuts.buildInputs
+  ;  # join lists with ++
 
-  shellHook = ''
+  shellHook = nix_shortcuts.shellHook + ''
+    export MINIO_ROOT_USER=miniotester
+    export MINIO_ROOT_PASSWORD=miniotester
+
+    WORKDIR=$PWD
+    MINIO_ROOT_DIRECTORY=$WORKDIR/.sdflow.cache/minio
+    export MC_CONFIG_DIR=$MINIO_ROOT_DIRECTORY/config
+
+    start-minio-server() {  # start test minio server
+      _minio_data_directory=$MINIO_ROOT_DIRECTORY/data
+      if [ ! -e "$_minio_data_directory" ]; then
+        mkdir -p "$_minio_data_directory"
+      fi
+      if [ ! -e "$MC_CONFIG_DIR" ]; then
+        mkdir -p "$MC_CONFIG_DIR"
+      fi
+      minio server "$_minio_data_directory"
+    }
+
+    initalize-minio-client-account() {
+      mc alias set localtest http://127.0.0.1:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"
+      mc admin user add localtest myaccesskey mysecretkey
+      mc admin policy attach localtest readwrite --user myaccesskey
+    }
+
     export PATH=$PWD/result/bin:$PATH
     eval "$(sdflow --completions bash)"
-  '';
+  '' + ''
+    echo-shortcuts ${__curPos.file}
+    unset shellHook
+  '';  # join strings with +
 }
