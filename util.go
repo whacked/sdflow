@@ -252,6 +252,58 @@ func commandExists(cmd string) bool {
 	return err == nil
 }
 
+
+func downloadS3FileSimple(s3Uri string, outputPath *string) error {
+	fmt.Fprintf(os.Stderr, "S3 URL detected. Checking download options...\n")
+
+	awsExists := commandExists("aws")
+	mcExists := commandExists("mc")
+	awsKeyId := os.Getenv("AWS_ACCESS_KEY_ID")
+	awsSecret := os.Getenv("AWS_SECRET_ACCESS_KEY")
+	minioKey := os.Getenv("MINIO_ACCESS_KEY")
+	minioSecret := os.Getenv("MINIO_SECRET_KEY")
+
+	trace(fmt.Sprintf("aws CLI exists: %v, mc CLI exists: %v", awsExists, mcExists))
+	trace(fmt.Sprintf("AWS_ACCESS_KEY_ID: %s, AWS_SECRET_ACCESS_KEY: %s, MINIO_ACCESS_KEY: %s, MINIO_SECRET_KEY: %s", awsKeyId, awsSecret, minioKey, minioSecret))
+
+	if awsExists && awsKeyId != "" && awsSecret != "" {
+		trace("downloading using aws")
+		if outputPath != nil {
+			return exec.Command("aws", "s3", "cp", s3Uri, *outputPath).Run()
+		} else {
+			return exec.Command("aws", "s3", "cp", s3Uri, "-").Run()
+		}
+	} else if mcExists && ((minioKey != "" && minioSecret != "") || (awsKeyId != "" && awsSecret != "")) {
+		trace("downloading using mc")
+		// Use MinIO credentials if available, otherwise fall back to AWS credentials
+		accessKey := minioKey
+		secretKey := minioSecret
+		if accessKey == "" || secretKey == "" {
+			accessKey = awsKeyId
+			secretKey = awsSecret
+		}
+		return downloadUsingMinioClient(s3Uri, outputPath, accessKey, secretKey)
+	} else {
+		trace("using built-in s3 downloader")
+		bytes := downloadRemoteFileFromS3(s3Uri)
+		if len(bytes) > 0 {
+			if outputPath != nil {
+				fmt.Fprintf(os.Stderr, "Downloaded %d bytes, writing to %s\n", len(bytes), *outputPath)
+				err := os.WriteFile(*outputPath, bytes, 0644)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Failed to write file: %v\n", err)
+				}
+				return err
+			} else {
+				_, err := os.Stdout.Write(bytes)
+				return err
+			}
+		} else {
+			return fmt.Errorf("built-in S3 downloader failed to retrieve file")
+		}
+	}
+}
+
 func downloadFileToLocalPath(url, outputPath string) error {
 	fmt.Fprintf(os.Stderr, "downloadFileToLocalPath called with: %s -> %s\n", url, outputPath)
 	if strings.HasPrefix(url, "http") {
@@ -267,49 +319,34 @@ func downloadFileToLocalPath(url, outputPath string) error {
 			return os.WriteFile(outputPath, bytes, 0644)
 		}
 	} else if strings.HasPrefix(url, "s3://") {
-		// FIXME: envvar stuff needed? it's fugly
-		fmt.Fprintf(os.Stderr, "S3 URL detected. Checking download options...\n")
-		awsExists := commandExists("aws")
-		mcExists := commandExists("mc")
-		awsKeyId := os.Getenv("AWS_ACCESS_KEY_ID")
-		awsSecret := os.Getenv("AWS_SECRET_ACCESS_KEY")
-		minioKey := os.Getenv("MINIO_ACCESS_KEY")
-		minioSecret := os.Getenv("MINIO_SECRET_KEY")
-
-		trace(fmt.Sprintf("aws CLI exists: %v, mc CLI exists: %v", awsExists, mcExists))
-
-		if awsExists && awsKeyId != "" && awsSecret != "" {
-			trace("downloading using aws")
-			return exec.Command("aws", "s3", "cp", url, outputPath).Run()
-		} else if mcExists && ((minioKey != "" && minioSecret != "") || (awsKeyId != "" && awsSecret != "")) {
-			trace("downloading using mc")
-			// Use MinIO credentials if available, otherwise fall back to AWS credentials
-			accessKey := minioKey
-			secretKey := minioSecret
-			if accessKey == "" || secretKey == "" {
-				accessKey = awsKeyId
-				secretKey = awsSecret
-			}
-			return downloadUsingMinioClient(url, outputPath, accessKey, secretKey)
-		} else {
-			trace("using built-in s3 downloader")
-			bytes := downloadRemoteFileFromS3(url)
-			if len(bytes) > 0 {
-				fmt.Fprintf(os.Stderr, "Downloaded %d bytes, writing to %s\n", len(bytes), outputPath)
-				err := os.WriteFile(outputPath, bytes, 0644)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Failed to write file: %v\n", err)
-				}
-				return err
-			} else {
-				return fmt.Errorf("built-in S3 downloader failed to retrieve file")
-			}
-		}
+		return downloadS3FileSimple(url, &outputPath)
 	}
 	return nil
 }
 
-func downloadUsingMinioClient(s3Uri, outputPath, accessKey, secretKey string) error {
+func downloadFileToStdout(url string) error {
+	fmt.Fprintf(os.Stderr, "downloadFileToStdout called with: %s\n", url)
+
+	if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
+		response, err := http.Get(url)
+		if err != nil {
+			return err
+		}
+		defer response.Body.Close()
+
+		if response.StatusCode != 200 {
+			return fmt.Errorf("unexpected HTTP status: %d", response.StatusCode)
+		}
+
+		_, err = io.Copy(os.Stdout, response.Body)
+		return err
+	} else if strings.HasPrefix(url, "s3://") {
+		return downloadS3FileSimple(url, nil)
+	}
+	return nil
+}
+
+func downloadUsingMinioClient(s3Uri string, outputPath *string, accessKey, secretKey string) error {
 	// Parse S3 URL to extract bucket and path
 	u, err := url.Parse(s3Uri)
 	if err != nil {
@@ -335,9 +372,15 @@ func downloadUsingMinioClient(s3Uri, outputPath, accessKey, secretKey string) er
 		url.QueryEscape(secretKey),
 		strings.TrimPrefix(strings.TrimPrefix(endpoint, "http://"), "https://"))
 
-	// Construct mc command
+	// Construct mc command - use cp for files, cat for stdout
 	mcPath := fmt.Sprintf("sdflowtemps3server/%s", bucketAndPath)
-	cmd := exec.Command("nix-shell", "--run", fmt.Sprintf("mc cp %s %s", mcPath, outputPath))
+	var cmd *exec.Cmd
+	if outputPath != nil {
+		cmd = exec.Command("mc", "cp", mcPath, *outputPath)
+	} else {
+		cmd = exec.Command("mc", "cat", mcPath)
+		cmd.Stdout = os.Stdout
+	}
 
 	// Set environment for the command
 	cmd.Env = append(os.Environ(), fmt.Sprintf("MC_HOST_sdflowtemps3server=%s", mcHostValue))

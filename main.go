@@ -32,6 +32,7 @@ type Executor interface {
 	// Core execution methods
 	ExecuteCommand(task *RunnableTask, command string, env []string) error
 	DownloadFile(url, outputPath string) error
+	DownloadFileToStdout(url string) error
 	ShouldUpdateSha256() bool
 	ShouldForceRun() bool
 	WorkerCount() int
@@ -188,6 +189,10 @@ func (e *RealExecutor) DownloadFile(url, outputPath string) error {
 	return downloadFileToLocalPath(url, outputPath)
 }
 
+func (e *RealExecutor) DownloadFileToStdout(url string) error {
+	return downloadFileToStdout(url)
+}
+
 func (e *RealExecutor) ShouldUpdateSha256() bool {
 	return e.updateSha256
 }
@@ -257,6 +262,11 @@ func (e *DryRunExecutor) ExecuteCommand(task *RunnableTask, command string, env 
 
 func (e *DryRunExecutor) DownloadFile(url, outputPath string) error {
 	fmt.Fprintf(os.Stderr, "%s %s -> %s\n", tagDryRun(url), url, outputPath)
+	return nil
+}
+
+func (e *DryRunExecutor) DownloadFileToStdout(url string) error {
+	fmt.Fprintf(os.Stderr, "%s %s -> stdout\n", tagDryRun(url), url)
 	return nil
 }
 
@@ -745,11 +755,6 @@ func isSimpleDownloadTask(task *RunnableTask) bool {
 
 	// Must have no run command
 	if task.taskDeclaration.Run != nil {
-		return false
-	}
-
-	// Must have an output file
-	if task.taskDeclaration.Out == nil {
 		return false
 	}
 
@@ -1249,10 +1254,12 @@ func runTask(task *RunnableTask, env map[string][]string, executor Executor, tas
 					trace(fmt.Sprintf("IN SHA256 mismatch for %s", input.path))
 				}
 			}
-		} else if task.taskDeclaration.Out != nil && task.taskDeclaration.Run == nil {
-			fmt.Println("using built-in downloaders")
-			shouldDownloadFile := false
-			if isRemotePath(task.inputs[0].path) {
+		} else if task.taskDeclaration.Run == nil && isRemotePath(task.inputs[0].path) {
+			trace("running download task")
+
+			if task.taskDeclaration.Out != nil {
+				// File download
+				shouldDownloadFile := false
 				if _, err := os.Stat(*task.taskDeclaration.Out); err == nil {
 					if !isFileBytesMatchingSha256(*task.taskDeclaration.Out, *task.taskDeclaration.OutSha256) {
 						fmt.Fprintf(os.Stderr, "warning: SHA256 mismatch for:\n%s; overwriting file", *task.taskDeclaration.Out)
@@ -1269,6 +1276,13 @@ func runTask(task *RunnableTask, env map[string][]string, executor Executor, tas
 						return
 					}
 					shouldCheckOutput = true
+				}
+			} else {
+				// Stdout download
+				err := executor.DownloadFileToStdout(task.inputs[0].path)
+				if err != nil {
+					fmt.Printf("Error downloading file to stdout: %v\n", err)
+					return
 				}
 			}
 		}
