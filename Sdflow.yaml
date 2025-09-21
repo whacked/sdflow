@@ -33,11 +33,17 @@ schemas:
   - ${SCHEMAS_DIR}/runnable.schema.json
 
 version.go:
+  in: Sdflow.yaml
   out: version.go
   run: |
+    today=$$(date +%Y%m%d)
+    git_commits_today=$$(git log --pretty=format:"%cd %h" --date=format:"%Y%m%d" | tac | grep "^$$today")
+    number_commits_today=$$(echo "$$git_commits_today" | wc -l)
+    latest_sha=$$(echo "$$git_commits_today" | tail -1 | awk '{print $$NF}')
+
     echo 'package main
 
-    const version = "2025-09-18.005"' > $out
+    const version = "'$$today.$$number_commits_today.$$latest_sha'"' > $out
 
 version:
   in: version.go
