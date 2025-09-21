@@ -252,18 +252,58 @@ func commandExists(cmd string) bool {
 	return err == nil
 }
 
+func isValidAWSCLI(path string) bool {
+	cmd := exec.Command(path, "--version")
+	output, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	return strings.HasPrefix(string(output), "aws-cli/")
+}
+
+func isValidMinioClient(path string) bool {
+	cmd := exec.Command(path, "--version")
+	output, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+
+	outputStr := strings.ToLower(string(output))
+	return strings.Contains(outputStr, "minio") &&
+		   !strings.Contains(outputStr, "midnight")
+}
+
+func detectValidS3Tools() (bool, bool) {
+	awsPath, awsErr := exec.LookPath("aws")
+	mcPath, mcErr := exec.LookPath("mc")
+
+	awsExists := awsErr == nil
+	mcExists := mcErr == nil
+
+	validAWS := awsExists && isValidAWSCLI(awsPath)
+	validMinio := mcExists && isValidMinioClient(mcPath)
+
+	// Log what we found for debugging
+	if mcExists && !validMinio {
+		trace("found 'mc' command but it's not MinIO client (likely Midnight Commander)")
+	}
+	if awsExists && !validAWS {
+		trace("found 'aws' command but version check failed")
+	}
+
+	return validAWS, validMinio
+}
 
 func downloadS3FileSimple(s3Uri string, outputPath *string) error {
 	fmt.Fprintf(os.Stderr, "S3 URL detected. Checking download options...\n")
 
-	awsExists := commandExists("aws")
-	mcExists := commandExists("mc")
+	awsExists, mcExists := detectValidS3Tools()
 	awsKeyId := os.Getenv("AWS_ACCESS_KEY_ID")
 	awsSecret := os.Getenv("AWS_SECRET_ACCESS_KEY")
 	minioKey := os.Getenv("MINIO_ACCESS_KEY")
 	minioSecret := os.Getenv("MINIO_SECRET_KEY")
 
-	trace(fmt.Sprintf("aws CLI exists: %v, mc CLI exists: %v", awsExists, mcExists))
+	trace(fmt.Sprintf("valid aws CLI: %v, valid mc CLI: %v", awsExists, mcExists))
 	trace(fmt.Sprintf("AWS_ACCESS_KEY_ID: %s, AWS_SECRET_ACCESS_KEY: %s, MINIO_ACCESS_KEY: %s, MINIO_SECRET_KEY: %s", awsKeyId, awsSecret, minioKey, minioSecret))
 
 	if awsExists && awsKeyId != "" && awsSecret != "" {

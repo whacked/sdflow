@@ -78,12 +78,14 @@ example-web-loader-flow:
 example-s3-loader:
   in: s3://answer-reformulation-pds/README.txt
   in.sha256: b24b59e210cefd4d964413ac555e4573470909f8aa3d16b6b9a65ddb04490b69
-  run: date
 
 example-s3-loader-to-disk:
   in: s3://answer-reformulation-pds/README.txt
   out: answer-reformulation-pds-README.txt
   out.sha256: b24b59e210cefd4d964413ac555e4573470909f8aa3d16b6b9a65ddb04490b69
+
+example-minio-loader-to-stdout:
+  in: s3://testbucket/version.go
 
 example-minio-loader-to-disk:
   in: s3://testbucket/version.go

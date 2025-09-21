@@ -55,6 +55,7 @@ pkgs.mkShell {
     pkgs.gopls
     goEnv
     gomod2nix
+    pkgs.awscli2
     pkgs.check-jsonschema
     pkgs.jsonnet
     pkgs.jq
@@ -71,9 +72,9 @@ pkgs.mkShell {
 
     WORKDIR=$PWD
     MINIO_ROOT_DIRECTORY=$WORKDIR/.sdflow.cache/minio
-    export MC_CONFIG_DIR=$MINIO_ROOT_DIRECTORY/config
 
     start-minio-server() {  # start test minio server
+      export MC_CONFIG_DIR=$MINIO_ROOT_DIRECTORY/config
       _minio_data_directory=$MINIO_ROOT_DIRECTORY/data
       if [ ! -e "$_minio_data_directory" ]; then
         mkdir -p "$_minio_data_directory"
@@ -85,6 +86,7 @@ pkgs.mkShell {
     }
 
     initalize-minio-client-account() {
+      export MC_CONFIG_DIR=$MINIO_ROOT_DIRECTORY/config
       mc alias set localtest http://127.0.0.1:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"
       mc admin user add localtest myaccesskey mysecretkey
       mc admin policy attach localtest readwrite --user myaccesskey
