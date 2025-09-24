@@ -2233,7 +2233,7 @@ func runTaskSingle(task *RunnableTask, env map[string][]string, executor Executo
 
 func main() {
 	COLORIZED_PROGRAM_NAME := color.HiBlueString(os.Args[0])
-	FLOW_DEFINITION_FILE = discoverFlowDefinitionFile()
+	// Defer flow definition file discovery until we know we need it
 	if os.Getenv("SDFLOW_CACHE_DIRECTORY") != "" {
 		CACHE_DIRECTORY = os.Getenv("SDFLOW_CACHE_DIRECTORY")
 	}
@@ -2243,32 +2243,10 @@ func main() {
 		Use:   fmt.Sprintf("%s %s", COLORIZED_PROGRAM_NAME, color.CyanString("[flags]")),
 		Short: "flow runner",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Check for explicit file flag and override FLOW_DEFINITION_FILE if provided
-			fileFlag, _ := cmd.Flags().GetString("file")
-			if fileFlag != "" {
-				FLOW_DEFINITION_FILE = fileFlag
-			}
-
+			// Handle standalone commands that don't require Sdflow.yaml discovery
 			versionFlag, _ := cmd.Flags().GetBool("version")
 			if versionFlag {
 				fmt.Println(version)
-				return nil
-			}
-
-			targetsFlag, _ := cmd.Flags().GetBool("targets")
-			if targetsFlag {
-				parsedFlowDefinition := parseFlowDefinitionFile(FLOW_DEFINITION_FILE)
-				for _, task := range parsedFlowDefinition.taskLookup {
-					fmt.Fprintf(os.Stdout, "%s\n", task.targetName)
-				}
-				return nil
-			}
-
-			validateDefintionFileFlag, _ := cmd.Flags().GetBool("validate")
-			if validateDefintionFileFlag {
-				validateFlowDefinitionFile(FLOW_DEFINITION_FILE)
-				reformattedFlowDefinition := reformatFlowDefinitionFile(FLOW_DEFINITION_FILE)
-				fmt.Println(reformattedFlowDefinition)
 				return nil
 			}
 
@@ -2286,6 +2264,31 @@ func main() {
 				default:
 					return fmt.Errorf("unsupported shell type: %s", generateCompletionsFlag)
 				}
+			}
+
+			// Now we know we need a flow definition file, so discover or use the provided one
+			fileFlag, _ := cmd.Flags().GetString("file")
+			if fileFlag != "" {
+				FLOW_DEFINITION_FILE = fileFlag
+			} else {
+				FLOW_DEFINITION_FILE = discoverFlowDefinitionFile()
+			}
+
+			targetsFlag, _ := cmd.Flags().GetBool("targets")
+			if targetsFlag {
+				parsedFlowDefinition := parseFlowDefinitionFile(FLOW_DEFINITION_FILE)
+				for _, task := range parsedFlowDefinition.taskLookup {
+					fmt.Fprintf(os.Stdout, "%s\n", task.targetName)
+				}
+				return nil
+			}
+
+			validateDefintionFileFlag, _ := cmd.Flags().GetBool("validate")
+			if validateDefintionFileFlag {
+				validateFlowDefinitionFile(FLOW_DEFINITION_FILE)
+				reformattedFlowDefinition := reformatFlowDefinitionFile(FLOW_DEFINITION_FILE)
+				fmt.Println(reformattedFlowDefinition)
+				return nil
 			}
 
 			shouldUpdateOutSha256, _ := cmd.Flags().GetBool("updatehash")
