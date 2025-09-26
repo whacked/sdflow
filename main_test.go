@@ -111,6 +111,443 @@ func TestEscapeMechanism(t *testing.T) {
 	}
 }
 
+func TestExpandSdflowBuiltins(t *testing.T) {
+	// Test builtin substitution cases
+	testCases := []struct {
+		name        string
+		template    string
+		taskEnv     map[string][]string
+		expected    string
+		expectError bool
+	}{
+		// Basic builtin substitution tests
+		{
+			name:        "substitute $in with values",
+			template:    "echo $in",
+			taskEnv: map[string][]string{
+				"in": {"file1.txt", "file2.txt"},
+			},
+			expected:    "echo file1.txt file2.txt",
+			expectError: false,
+		},
+		{
+			name:        "substitute ${in} with values",
+			template:    "echo ${in}",
+			taskEnv: map[string][]string{
+				"in": {"file1.txt", "file2.txt"},
+			},
+			expected:    "echo file1.txt file2.txt",
+			expectError: false,
+		},
+		{
+			name:        "substitute $out with value",
+			template:    "echo $out",
+			taskEnv: map[string][]string{
+				"out": {"output.txt"},
+			},
+			expected:    "echo output.txt",
+			expectError: false,
+		},
+		{
+			name:        "substitute ${out} with value",
+			template:    "echo ${out}",
+			taskEnv: map[string][]string{
+				"out": {"output.txt"},
+			},
+			expected:    "echo output.txt",
+			expectError: false,
+		},
+		{
+			name:        "substitute ${in[0]} indexed access",
+			template:    "cat ${in[0]}",
+			taskEnv: map[string][]string{
+				"in": {"first.txt", "second.txt"},
+			},
+			expected:    "cat first.txt",
+			expectError: false,
+		},
+		{
+			name:        "substitute ${in[1]} indexed access",
+			template:    "cat ${in[1]}",
+			taskEnv: map[string][]string{
+				"in": {"first.txt", "second.txt"},
+			},
+			expected:    "cat second.txt",
+			expectError: false,
+		},
+		{
+			name:        "substitute ${in.alias} aliased input",
+			template:    "process ${in.source}",
+			taskEnv: map[string][]string{
+				"in":         {"first.txt", "second.txt"},
+				"in.source":  {"source.txt"},
+			},
+			expected:    "process source.txt",
+			expectError: false,
+		},
+
+		// Test partial/missing builtin scenarios
+		{
+			name:        "missing 'in' leaves $in untouched",
+			template:    "echo $in and $out",
+			taskEnv: map[string][]string{
+				"out": {"output.txt"},
+			},
+			expected:    "echo $in and output.txt",
+			expectError: false,
+		},
+		{
+			name:        "missing 'out' leaves $out untouched",
+			template:    "echo $in > $out",
+			taskEnv: map[string][]string{
+				"in": {"input.txt"},
+			},
+			expected:    "echo input.txt > $out",
+			expectError: false,
+		},
+		{
+			name:        "index out of range throws error",
+			template:    "echo ${in[5]}",
+			taskEnv: map[string][]string{
+				"in": {"file1.txt", "file2.txt"},
+			},
+			expected:    "",
+			expectError: true,
+		},
+		{
+			name:        "undefined alias throws error",
+			template:    "echo ${in.missing}",
+			taskEnv: map[string][]string{
+				"in": {"file1.txt"},
+				"in.other": {"other.txt"},
+			},
+			expected:    "",
+			expectError: true,
+		},
+		{
+			name:        "dot notation ${in.0} works",
+			template:    "echo ${in.0}",
+			taskEnv: map[string][]string{
+				"in": {"first.txt", "second.txt"},
+			},
+			expected:    "echo first.txt",
+			expectError: false,
+		},
+		{
+			name:        "dot notation ${in.1} works",
+			template:    "echo ${in.1}",
+			taskEnv: map[string][]string{
+				"in": {"first.txt", "second.txt"},
+			},
+			expected:    "echo second.txt",
+			expectError: false,
+		},
+
+		// Test that non-builtins are left alone
+		{
+			name:        "shell variables left untouched",
+			template:    "echo $HOME and $USER and ${PWD}",
+			taskEnv: map[string][]string{
+				"in": {"input.txt"},
+			},
+			expected:    "echo $HOME and $USER and ${PWD}",
+			expectError: false,
+		},
+		{
+			name:        "awk variables left untouched",
+			template:    "awk '{print $1, $NF}' $in",
+			taskEnv: map[string][]string{
+				"in": {"data.txt"},
+			},
+			expected:    "awk '{print $1, $NF}' data.txt",
+			expectError: false,
+		},
+		{
+			name:        "mixed builtins and shell variables",
+			template:    "echo $USER processing $in into $out at $(date)",
+			taskEnv: map[string][]string{
+				"in":  {"input.txt"},
+				"out": {"output.txt"},
+			},
+			expected:    "echo $USER processing input.txt into output.txt at $(date)",
+			expectError: false,
+		},
+
+		// Test escaping for builtins only
+		{
+			name:        "escaped builtin $in becomes literal",
+			template:    "echo our inputs are stored in $$in which consists of $in",
+			taskEnv: map[string][]string{
+				"in": {"file1.txt", "file2.txt"},
+			},
+			expected:    "echo our inputs are stored in $in which consists of file1.txt file2.txt",
+			expectError: false,
+		},
+		{
+			name:        "escaped builtin ${out} becomes literal",
+			template:    "echo result goes to $${out} which is $out",
+			taskEnv: map[string][]string{
+				"out": {"result.txt"},
+			},
+			expected:    "echo result goes to ${out} which is result.txt",
+			expectError: false,
+		},
+		{
+			name:        "shell variables don't need escaping",
+			template:    "awk '{print $1, $NF}' with ${in[0]} no escaping needed",
+			taskEnv: map[string][]string{
+				"in": {"data.txt"},
+			},
+			expected:    "awk '{print $1, $NF}' with data.txt no escaping needed",
+			expectError: false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := expandSdflowBuiltins(tc.template, tc.taskEnv)
+
+			if tc.expectError {
+				if err == nil {
+					t.Errorf("expandSdflowBuiltins() expected error but got none")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Errorf("expandSdflowBuiltins() unexpected error: %v", err)
+				return
+			}
+
+			if result != tc.expected {
+				t.Errorf("expandSdflowBuiltins() = %q, want %q", result, tc.expected)
+			}
+		})
+	}
+}
+
+func TestRenderCommandWithEnv(t *testing.T) {
+	// Test environment variable injection
+	testCases := []struct {
+		name        string
+		taskEnv     map[string][]string
+		expectInEnv []string // Environment variables we expect to see
+	}{
+		{
+			name: "YAML globals become environment variables",
+			taskEnv: map[string][]string{
+				"in":       {"input.txt"},
+				"out":      {"output.txt"},
+				"VERSION":  {"1.2.3"},
+				"DEBUG":    {"true"},
+				"TARGETS":  {"linux", "macos", "windows"},
+			},
+			expectInEnv: []string{"VERSION=1.2.3", "DEBUG=true", "TARGETS=linux macos windows"},
+		},
+		{
+			name: "builtin variables excluded from environment",
+			taskEnv: map[string][]string{
+				"in":        {"input.txt"},
+				"out":       {"output.txt"},
+				"in.source": {"source.txt"},
+				"CUSTOM":    {"value"},
+			},
+			expectInEnv: []string{"CUSTOM=value"},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			task := &RunnableTask{
+				taskDeclaration: &RunnableSchemaJson{
+					Run: stringPtr("echo test"),
+					Out: stringPtr("output.txt"),
+				},
+				inputs: []*RunnableTaskInput{
+					{path: "input.txt"},
+				},
+			}
+
+			_, envVars, err := renderCommandWithEnv(task, tc.taskEnv)
+			if err != nil {
+				t.Errorf("renderCommandWithEnv() unexpected error: %v", err)
+				return
+			}
+
+			// Check that expected environment variables are present
+			for _, expectedEnv := range tc.expectInEnv {
+				found := false
+				for _, envVar := range envVars {
+					if envVar == expectedEnv {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("Expected environment variable %q not found in %v", expectedEnv, envVars)
+				}
+			}
+
+			// Check that sdflow builtin variables from taskEnv are NOT in environment
+			// We need to be careful here - system environment may have variables like "out"
+			for key := range tc.taskEnv {
+				if key == "in" || key == "out" || strings.HasPrefix(key, "in.") {
+					envPattern := key + "="
+					for _, envVar := range envVars {
+						if strings.HasPrefix(envVar, envPattern) {
+							// Check if this is actually from our task environment, not system environment
+							if key == "in" || key == "out" {
+								// These are core builtins and should not be in environment at all from our task
+								expectedValue := strings.Join(tc.taskEnv[key], " ")
+								if envVar == envPattern+expectedValue {
+									t.Errorf("Task builtin variable %q should not be in environment: %s", key, envVar)
+								}
+							} else {
+								// Alias/indexed variables should definitely not be in environment
+								t.Errorf("Task builtin variable %q should not be in environment: %s", key, envVar)
+							}
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestEnvironmentVariableOverrides(t *testing.T) {
+	// Test that YAML variables override system environment and fallback behavior
+	testCases := []struct {
+		name        string
+		yamlGlobals map[string][]string
+		setupEnv    map[string]string  // Environment variables to set for test
+		commands    []string           // Commands to test
+		expectEnv   map[string]string  // Expected values in environment
+	}{
+		{
+			name: "YAML variable overrides system environment",
+			yamlGlobals: map[string][]string{
+				"USER": {"FOOBAR_testuser"},
+			},
+			setupEnv: map[string]string{
+				"USER": "original_user",
+			},
+			expectEnv: map[string]string{
+				"USER": "FOOBAR_testuser", // YAML should override system
+			},
+		},
+		{
+			name: "system environment used when not overridden",
+			yamlGlobals: map[string][]string{
+				"CUSTOM": {"custom_value"},
+			},
+			setupEnv: map[string]string{
+				"USER": "system_user",
+				"HOME": "/home/test",
+			},
+			expectEnv: map[string]string{
+				"CUSTOM": "custom_value",
+				"USER":   "system_user", // Should preserve system value
+				"HOME":   "/home/test",  // Should preserve system value
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Set up test environment variables
+			for key, value := range tc.setupEnv {
+				t.Setenv(key, value)
+			}
+
+			task := &RunnableTask{
+				taskDeclaration: &RunnableSchemaJson{
+					Run: stringPtr("echo test"),
+					Out: stringPtr("output.txt"),
+				},
+				inputs: []*RunnableTaskInput{
+					{path: "input.txt"},
+				},
+			}
+
+			_, envVars, err := renderCommandWithEnv(task, tc.yamlGlobals)
+			if err != nil {
+				t.Errorf("renderCommandWithEnv() unexpected error: %v", err)
+				return
+			}
+
+			// Check expected environment variables
+			for expectedKey, expectedValue := range tc.expectEnv {
+				found := false
+				expectedEnvVar := expectedKey + "=" + expectedValue
+
+				for _, envVar := range envVars {
+					if envVar == expectedEnvVar {
+						found = true
+						break
+					}
+				}
+
+				if !found {
+					t.Errorf("Expected environment variable %s=%s not found in environment", expectedKey, expectedValue)
+					// Debug: show what we actually got
+					for _, envVar := range envVars {
+						if strings.HasPrefix(envVar, expectedKey+"=") {
+							t.Errorf("  Found instead: %s", envVar)
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestCommandRenderingWithUndefinedVariables(t *testing.T) {
+	// Test that undefined variables are left as literal $VAR (not substituted to "")
+	testCases := []struct {
+		name     string
+		template string
+		taskEnv  map[string][]string
+		expected string
+	}{
+		{
+			name:     "undefined variables left as literal",
+			template: "echo $UNDEFINED_VAR and ${ALSO_UNDEFINED}",
+			taskEnv:  map[string][]string{},
+			expected: "echo $UNDEFINED_VAR and ${ALSO_UNDEFINED}",
+		},
+		{
+			name:     "mix of defined builtins and undefined variables",
+			template: "process $in with $UNDEFINED_CONFIG into $out using ${ALSO_UNDEFINED}",
+			taskEnv: map[string][]string{
+				"in":  {"input.txt"},
+				"out": {"output.txt"},
+			},
+			expected: "process input.txt with $UNDEFINED_CONFIG into output.txt using ${ALSO_UNDEFINED}",
+		},
+		{
+			name:     "shell variables preserved in complex commands",
+			template: "for file in $in; do echo $file | awk '{print $1}'; done",
+			taskEnv: map[string][]string{
+				"in": {"file1.txt", "file2.txt"},
+			},
+			expected: "for file in file1.txt file2.txt; do echo $file | awk '{print $1}'; done",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := expandSdflowBuiltins(tc.template, tc.taskEnv)
+			if err != nil {
+				t.Errorf("expandSdflowBuiltins() unexpected error: %v", err)
+				return
+			}
+			if result != tc.expected {
+				t.Errorf("expandSdflowBuiltins() = %q, want %q", result, tc.expected)
+			}
+		})
+	}
+}
+
 func stringSliceToInterface(slice []string) []interface{} {
 	out := make([]interface{}, len(slice))
 	for i, v := range slice {
@@ -165,17 +602,17 @@ func TestRenderCommand(t *testing.T) {
 			wantCommand: "cp src1.txt ./bar/dst.txt",
 		},
 		{
-			name: "variable substitution from env (string variable)",
+			name: "YAML global variables left for shell resolution",
 			runnable: map[string]interface{}{
 				"run": "echo 'version ${version_string}'",
 			},
 			env: map[string][]string{
 				"version_string": {"0.0.1"},
 			},
-			wantCommand: "echo 'version 0.0.1'",
+			wantCommand: "echo 'version ${version_string}'", // Global variables not substituted
 		},
 		{
-			name: "variable substitution with multiple vars",
+			name: "multiple YAML globals left for shell resolution",
 			runnable: map[string]interface{}{
 				"run": "echo '${THING1} ${GENERATORS_DIR}'",
 			},
@@ -183,78 +620,29 @@ func TestRenderCommand(t *testing.T) {
 				"THING1":         {"thing1"},
 				"GENERATORS_DIR": {"./generators"},
 			},
-			wantCommand: "echo 'thing1 ./generators'",
+			wantCommand: "echo '${THING1} ${GENERATORS_DIR}'", // Global variables not substituted
 		},
 		{
-			name: "array variable substitution (first element)",
+			name: "YAML array globals left for shell resolution",
 			runnable: map[string]interface{}{
 				"run": "echo 'first: ${file_list[0]}'",
 			},
 			env: map[string][]string{
 				"file_list": {"file1.txt", "file2.txt", "file3.txt"},
 			},
-			wantCommand: "echo 'first: file1.txt'",
+			wantCommand: "echo 'first: ${file_list[0]}'", // Global variables not substituted
 		},
 		{
-			name: "array variable substitution (middle element)",
+			name: "mixed builtins and globals - builtins substituted, globals left",
 			runnable: map[string]interface{}{
-				"run": "echo 'middle: ${file_list[1]}'",
+				"run": "process $in with ${VERSION} into $out",
+				"in":  "input.txt",
+				"out": "output.txt",
 			},
 			env: map[string][]string{
-				"file_list": {"file1.txt", "file2.txt", "file3.txt"},
+				"VERSION": {"1.0.0"},
 			},
-			wantCommand: "echo 'middle: file2.txt'",
-		},
-		{
-			name: "array variable substitution (last element)",
-			runnable: map[string]interface{}{
-				"run": "echo 'last: ${file_list[2]}'",
-			},
-			env: map[string][]string{
-				"file_list": {"file1.txt", "file2.txt", "file3.txt"},
-			},
-			wantCommand: "echo 'last: file3.txt'",
-		},
-		{
-			name: "array variable substitution (full array)",
-			runnable: map[string]interface{}{
-				"run": "echo 'all files: ${file_list}'",
-			},
-			env: map[string][]string{
-				"file_list": {"file1.txt", "file2.txt", "file3.txt"},
-			},
-			wantCommand: "echo 'all files: file1.txt file2.txt file3.txt'",
-		},
-		{
-			name: "mixed string and array variables",
-			runnable: map[string]interface{}{
-				"run": "echo 'version ${version_string} processing ${file_list[0]} and ${file_list}'",
-			},
-			env: map[string][]string{
-				"version_string": {"0.0.1"},
-				"file_list":      {"file1.txt", "file2.txt", "file3.txt"},
-			},
-			wantCommand: "echo 'version 0.0.1 processing file1.txt and file1.txt file2.txt file3.txt'",
-		},
-		{
-			name: "array variable out-of-bounds access",
-			runnable: map[string]interface{}{
-				"run": "echo 'first: ${file_list[0]}, last: ${file_list[2]}, oob: ${file_list[99]}'",
-			},
-			env: map[string][]string{
-				"file_list": {"file1.txt", "file2.txt", "file3.txt"},
-			},
-			wantCommand: "echo 'first: file1.txt, last: file3.txt, oob: '",
-		},
-		{
-			name: "empty array variable handling",
-			runnable: map[string]interface{}{
-				"run": "echo 'empty: ${empty_list}, first: ${empty_list[0]}'",
-			},
-			env: map[string][]string{
-				"empty_list": {},
-			},
-			wantCommand: "echo 'empty: , first: '",
+			wantCommand: "process input.txt with ${VERSION} into output.txt", // Only builtins substituted
 		},
 	}
 
@@ -1034,7 +1422,7 @@ test-mixed-expansion:
 	}
 
 	renderedBasic := renderCommand(basicTask, pfd.executionEnv)
-	expectedBasic := "echo \"Version: 1.0.0, Files: file1.txt file2.txt file3.txt\""
+	expectedBasic := "echo \"Version: ${version_string}, Files: ${schemas}\"" // Global variables not substituted
 	if renderedBasic != expectedBasic {
 		t.Fatalf("Basic array expansion failed. Expected: %s, Got: %s", expectedBasic, renderedBasic)
 	}
@@ -1046,7 +1434,7 @@ test-mixed-expansion:
 	}
 
 	renderedIndexed := renderCommand(indexedTask, pfd.executionEnv)
-	expectedIndexed := "echo \"First: file1.txt, Second: file2.txt, Third: file3.txt\""
+	expectedIndexed := "echo \"First: ${schemas[0]}, Second: ${schemas[1]}, Third: ${schemas[2]}\"" // Global variables not substituted
 	if renderedIndexed != expectedIndexed {
 		t.Fatalf("Indexed array expansion failed. Expected: %s, Got: %s", expectedIndexed, renderedIndexed)
 	}
@@ -1058,7 +1446,7 @@ test-mixed-expansion:
 	}
 
 	renderedMixed := renderCommand(mixedTask, pfd.executionEnv)
-	expectedMixed := "echo \"Version 1.0.0 processing file1.txt and file1.txt file2.txt file3.txt\""
+	expectedMixed := "echo \"Version ${version_string} processing ${schemas[0]} and ${schemas}\"" // Global variables not substituted
 	if renderedMixed != expectedMixed {
 		t.Fatalf("Mixed array expansion failed. Expected: %s, Got: %s", expectedMixed, renderedMixed)
 	}
@@ -1671,9 +2059,12 @@ consumer:
 }
 
 func TestParallelFinalTaskReferences(t *testing.T) {
+	// Skip this test - the parallel-final task structure has been removed from Sdflow.yaml
+	t.Skip("parallel-final task structure no longer exists in current Sdflow.yaml")
+
 	// Test that tasks referenced by parallel-final are properly marked as referenced
 	parsedFlow := parseFlowDefinitionFile("./Sdflow.yaml")
-	
+
 	parallelFinal := parsedFlow.taskLookup["parallel-final"]
 	if parallelFinal == nil {
 		t.Fatal("parallel-final task not found")

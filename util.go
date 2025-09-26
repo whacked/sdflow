@@ -552,26 +552,174 @@ func prepareExpandableTemplate(template string, executionEnv map[string][]string
 	})
 }
 
+// expandSdflowBuiltins performs controlled substitution of only sdflow builtin variables.
+// This replaces the aggressive os.Expand approach with targeted substitution that only
+// handles: $in, $out, ${in}, ${out}, ${in[N]}, and ${in.ALIAS}
+// All other variables (including YAML globals and shell variables) are left untouched.
+// Returns an error if builtin variable references are invalid (e.g., out of range index or undefined alias).
+func expandSdflowBuiltins(template string, taskEnv map[string][]string) (string, error) {
+	// Handle $$ escape sequences by temporarily replacing them, but only for builtins
+	// Since we don't substitute non-builtins anymore, we only need to escape builtin patterns
+	const placeholder = "___ESCAPED_DOLLAR___"
+
+	// First, escape $$ patterns that precede builtin variable names
+	builtinEscapePattern := regexp.MustCompile(`\$\$(in|out)\b`)
+	result := builtinEscapePattern.ReplaceAllString(template, placeholder+"$1")
+
+	// Also escape braced builtin patterns
+	bracedEscapePattern := regexp.MustCompile(`\$\$\{(in|out)([^}]*)\}`)
+	result = bracedEscapePattern.ReplaceAllString(result, placeholder+"{$1$2}")
+
+	// Define sdflow builtin patterns and their handlers
+	patterns := []struct {
+		regex   *regexp.Regexp
+		handler func(match string, groups []string) (string, error)
+	}{
+		// ${in[N]} - indexed input access (throws on out of range)
+		{
+			regex: regexp.MustCompile(`\$\{in\[(\d+)\]\}`),
+			handler: func(match string, groups []string) (string, error) {
+				if len(groups) < 2 {
+					return "", fmt.Errorf("invalid indexed input syntax: %s", match)
+				}
+				index, err := strconv.Atoi(groups[1])
+				if err != nil {
+					return "", fmt.Errorf("invalid index in %s: %v", match, err)
+				}
+				inValues, exists := taskEnv["in"]
+				if !exists {
+					return match, nil // Leave untouched if 'in' not defined
+				}
+				if index >= len(inValues) {
+					return "", fmt.Errorf("index %d out of range for input array (length %d)", index, len(inValues))
+				}
+				return inValues[index], nil
+			},
+		},
+		// ${in.N} - dot-notation indexed input access (new preferred syntax)
+		{
+			regex: regexp.MustCompile(`\$\{in\.(\d+)\}`),
+			handler: func(match string, groups []string) (string, error) {
+				if len(groups) < 2 {
+					return "", fmt.Errorf("invalid dot-indexed input syntax: %s", match)
+				}
+				index, err := strconv.Atoi(groups[1])
+				if err != nil {
+					return "", fmt.Errorf("invalid index in %s: %v", match, err)
+				}
+				inValues, exists := taskEnv["in"]
+				if !exists {
+					return match, nil // Leave untouched if 'in' not defined
+				}
+				if index >= len(inValues) {
+					return "", fmt.Errorf("index %d out of range for input array (length %d)", index, len(inValues))
+				}
+				return inValues[index], nil
+			},
+		},
+		// ${in.ALIAS} - aliased input access (throws on undefined alias)
+		{
+			regex: regexp.MustCompile(`\$\{in\.([a-zA-Z_][a-zA-Z0-9_]*)\}`),
+			handler: func(match string, groups []string) (string, error) {
+				if len(groups) < 2 {
+					return "", fmt.Errorf("invalid aliased input syntax: %s", match)
+				}
+				alias := groups[1]
+				// Check if this is a numeric alias (handled by dot-notation pattern above)
+				if _, err := strconv.Atoi(alias); err == nil {
+					return match, nil // Let the numeric pattern handle it
+				}
+				aliasKey := fmt.Sprintf("in.%s", alias)
+				if aliasValues, exists := taskEnv[aliasKey]; exists && len(aliasValues) > 0 {
+					return aliasValues[0], nil
+				}
+				return "", fmt.Errorf("undefined input alias: %s", alias)
+			},
+		},
+		// ${in} - all inputs as space-separated string
+		{
+			regex: regexp.MustCompile(`\$\{in\}`),
+			handler: func(match string, groups []string) (string, error) {
+				if inValues, exists := taskEnv["in"]; exists {
+					return strings.Join(inValues, " "), nil
+				}
+				return match, nil // Leave untouched if 'in' not defined
+			},
+		},
+		// ${out} - output path
+		{
+			regex: regexp.MustCompile(`\$\{out\}`),
+			handler: func(match string, groups []string) (string, error) {
+				if outValues, exists := taskEnv["out"]; exists && len(outValues) > 0 {
+					return outValues[0], nil
+				}
+				return match, nil // Leave untouched if 'out' not defined
+			},
+		},
+		// $in - all inputs as space-separated string (unbraced)
+		{
+			regex: regexp.MustCompile(`\$in\b`),
+			handler: func(match string, groups []string) (string, error) {
+				if inValues, exists := taskEnv["in"]; exists {
+					return strings.Join(inValues, " "), nil
+				}
+				return match, nil // Leave untouched if 'in' not defined
+			},
+		},
+		// $out - output path (unbraced)
+		{
+			regex: regexp.MustCompile(`\$out\b`),
+			handler: func(match string, groups []string) (string, error) {
+				if outValues, exists := taskEnv["out"]; exists && len(outValues) > 0 {
+					return outValues[0], nil
+				}
+				return match, nil // Leave untouched if 'out' not defined
+			},
+		},
+	}
+
+	// Apply each pattern
+	for _, pattern := range patterns {
+		var err error
+		result = pattern.regex.ReplaceAllStringFunc(result, func(match string) string {
+			groups := pattern.regex.FindStringSubmatch(match)
+			replacement, handlerErr := pattern.handler(match, groups)
+			if handlerErr != nil {
+				err = handlerErr
+			}
+			return replacement
+		})
+		if err != nil {
+			return "", err
+		}
+	}
+
+	// Restore escaped dollars (only for builtin patterns we actually escaped)
+	result = strings.ReplaceAll(result, placeholder, "$")
+	return result, nil
+}
+
+// Legacy function - kept for backward compatibility during transition
 func expandVariables(template string, executionEnv map[string][]string) string {
 	// Handle $$ escape sequences by temporarily replacing them
 	const placeholder = "___ESCAPED_DOLLAR___"
 	escapedTemplate := strings.ReplaceAll(template, "$$", placeholder)
-	
+
 	// First pass: prepare ${VAR[i]} syntax for os.Expand
 	preparedTemplate := prepareExpandableTemplate(escapedTemplate, executionEnv)
-	
+
 	// Create a flat environment map for os.Expand
 	flatEnv := make(map[string]string)
 	for varName, values := range executionEnv {
 		// Add array variable as space-separated string
 		flatEnv[varName] = strings.Join(values, " ")
-		
+
 		// Add individual indexed variables (VAR_0, VAR_1, etc.)
 		for i, value := range values {
 			flatEnv[fmt.Sprintf("%s_%d", varName, i)] = value
 		}
 	}
-	
+
 	// Second pass: use os.Expand for standard ${VAR} syntax
 	expanded := os.Expand(preparedTemplate, func(key string) string {
 		if value, exists := flatEnv[key]; exists {
@@ -579,7 +727,7 @@ func expandVariables(template string, executionEnv map[string][]string) string {
 		}
 		return ""
 	})
-	
+
 	// Third pass: restore escaped dollars
 	return strings.ReplaceAll(expanded, placeholder, "$")
 }

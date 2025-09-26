@@ -12,7 +12,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -980,21 +982,22 @@ func substituteWithContext(s string, context map[string]string) *string {
 	return &substituted
 }
 
-func renderCommand(task *RunnableTask, env map[string][]string) string {
-	// Create a combined environment map that includes task-specific variables
-	combinedEnv := make(map[string][]string)
-	for k, v := range env {
-		combinedEnv[k] = v
-	}
+// renderCommandWithEnv renders a task's run command with controlled builtin substitution
+// and returns both the rendered command and environment variables for injection.
+// This separates sdflow builtins (substituted in command) from YAML globals (passed as env vars).
+func renderCommandWithEnv(task *RunnableTask, env map[string][]string) (string, []string, error) {
+	// Separate builtin task variables from YAML globals
+	taskBuiltins := make(map[string][]string)
+	var envVars []string
 
-	// Add task-specific variables
+	// Add task-specific builtin variables
 	if task.taskDeclaration.Out != nil {
-		combinedEnv["out"] = []string{*task.taskDeclaration.Out}
+		taskBuiltins["out"] = []string{*task.taskDeclaration.Out}
 	}
 
 	// Add input variables
 	var inPaths []string
-	for i, input := range task.inputs {
+	for _, input := range task.inputs {
 		resolvedPath := input.path
 
 		// If this is a task reference, resolve it to the CAS path
@@ -1027,21 +1030,68 @@ func renderCommand(task *RunnableTask, env map[string][]string) string {
 		// Add input alias variables like "in.first", "in.second"
 		if input.alias != "" {
 			aliasKey := fmt.Sprintf("in.%s", input.alias)
-			combinedEnv[aliasKey] = []string{resolvedPath}
+			taskBuiltins[aliasKey] = []string{resolvedPath}
 		}
 
-		// Add indexed input variables like "in_0", "in_1" for ${in[0]}, ${in[1]}
-		indexKey := fmt.Sprintf("in_%d", i)
-		combinedEnv[indexKey] = []string{resolvedPath}
+		// NOTE: Removed in_0, in_1 syntax - use ${in.0}, ${in.1} instead
 	}
-	combinedEnv["in"] = inPaths
+	taskBuiltins["in"] = inPaths
+
+	// Convert YAML globals to environment variables
+	// Start with system environment
+	envVars = append(envVars, os.Environ()...)
+
+	// Add YAML globals, which override system environment
+	for key, values := range env {
+		// Skip core builtin task variables - they shouldn't be in environment
+		// Note: in_N variables are no longer built-in, so they can appear in environment
+		if key == "in" || key == "out" || (strings.HasPrefix(key, "in.") && isValidAlias(key[3:])) {
+			continue
+		}
+		// Convert array values to space-separated string for environment
+		envValue := strings.Join(values, " ")
+		envVars = append(envVars, fmt.Sprintf("%s=%s", key, envValue))
+	}
 
 	if task.taskDeclaration.Run != nil {
 		trace(fmt.Sprintf("Run command: %s", *task.taskDeclaration.Run))
 	}
 
-	renderedCommand := expandVariables(*task.taskDeclaration.Run, combinedEnv)
-	return renderedCommand
+	// Use controlled builtin substitution instead of aggressive expansion
+	renderedCommand, err := expandSdflowBuiltins(*task.taskDeclaration.Run, taskBuiltins)
+	if err != nil {
+		return "", nil, fmt.Errorf("error expanding builtin variables: %v", err)
+	}
+	return renderedCommand, envVars, nil
+}
+
+// isValidAlias checks if a string is a valid input alias (not a numeric index)
+func isValidAlias(alias string) bool {
+	if alias == "" {
+		return false
+	}
+	// If it's a number, it's not an alias (it would be handled by ${in.N} syntax)
+	if _, err := strconv.Atoi(alias); err == nil {
+		return false
+	}
+	// Check if it matches alias naming rules
+	match, _ := regexp.MatchString(`^[a-zA-Z_][a-zA-Z0-9_]*$`, alias)
+	return match
+}
+
+// renderCommand provides backward compatibility by using the new controlled substitution
+// but maintaining the original function signature for existing code.
+func renderCommand(task *RunnableTask, env map[string][]string) string {
+	command, _, err := renderCommandWithEnv(task, env)
+	if err != nil {
+		// For backward compatibility, log the error and return the original command
+		trace(fmt.Sprintf("Error rendering command: %v", err))
+		if task.taskDeclaration.Run != nil {
+			return *task.taskDeclaration.Run
+		}
+		return ""
+	}
+	return command
 }
 
 func getTaskInputCachePath(task *RunnableTask, inputPath string) (string, bool) {
@@ -1289,15 +1339,13 @@ func runTask(task *RunnableTask, env map[string][]string, executor Executor, tas
 	}
 
 	if task.taskDeclaration.Run != nil {
-		command := renderCommand(task, env)
-
-		var cmdEnv []string
-		cmdEnv = append(cmdEnv, os.Environ()...)
-		for key, value := range env {
-			cmdEnv = append(cmdEnv, fmt.Sprintf("%s=%s", key, strings.Join(value, " ")))
+		command, cmdEnv, err := renderCommandWithEnv(task, env)
+		if err != nil {
+			fmt.Printf("Error rendering command for task %s: %v\n", task.targetName, err)
+			return
 		}
 
-		err := executor.ExecuteCommand(task, command, cmdEnv)
+		err = executor.ExecuteCommand(task, command, cmdEnv)
 		if err != nil {
 			fmt.Printf("Error executing command: %v\n", err)
 			return
@@ -2174,15 +2222,13 @@ func runTaskSingle(task *RunnableTask, env map[string][]string, executor Executo
 
 	// Execute the command if present
 	if task.taskDeclaration.Run != nil {
-		command := renderCommand(task, env)
-
-		var cmdEnv []string
-		cmdEnv = append(cmdEnv, os.Environ()...)
-		for key, value := range env {
-			cmdEnv = append(cmdEnv, fmt.Sprintf("%s=%s", key, strings.Join(value, " ")))
+		command, cmdEnv, err := renderCommandWithEnv(task, env)
+		if err != nil {
+			fmt.Printf("Error rendering command for task %s: %v\n", task.targetName, err)
+			return
 		}
 
-		err := executor.ExecuteCommand(task, command, cmdEnv)
+		err = executor.ExecuteCommand(task, command, cmdEnv)
 		if err != nil {
 			fmt.Printf("Error executing command: %v\n", err)
 			return
