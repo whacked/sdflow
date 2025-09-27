@@ -36,18 +36,18 @@ version.go:
   in: Sdflow.yaml
   out: version.go
   run: |
-    today=$$(date +%Y%m%d)
-    git_commits_today=$$(git log --pretty=format:"%cd %h" --date=format:"%Y%m%d" | tac | grep "^$$today")
-    number_commits_today=$$(echo "$$git_commits_today" | wc -l)
-    latest_sha=$$(echo "$$git_commits_today" | tail -1 | awk '{print $$NF}')
+    today=$(date +%Y%m%d)
+    git_commits_today=$(git log --pretty=format:"%cd %h" --date=format:"%Y%m%d" | tac | grep "^$today")
+    number_commits_today=$(echo "$git_commits_today" | wc -l)
+    latest_sha=$(echo "$git_commits_today" | tail -1 | awk '{print $NF}')
 
     echo 'package main
 
-    const version = "'$$today.$$number_commits_today.$$latest_sha'"' > $out
+    const version = "'$today.$number_commits_today.$latest_sha'"' > $out
 
 version:
   in: version.go
-  run: cat $in | tail -1 | awk '{print $$NF}' | tr -d '"'
+  run: cat $in | tail -1 | awk '{print $NF}' | tr -d '"'
 
 build:
   in: # currently sha256 is only supported for single input
@@ -102,14 +102,14 @@ update-readme:
   out: README.md
   run: |
     # Store top and bottom halves in variables
-    TOP=$$(sed '/<!-- BEGIN_SDFLOW_HELP -->/q' README.md)
-    BOTTOM=$$(sed -n '/<!-- END_SDFLOW_HELP -->/,$$p' README.md)
+    TOP=$(sed '/<!-- BEGIN_SDFLOW_HELP -->/q' README.md)
+    BOTTOM=$(sed -n '/<!-- END_SDFLOW_HELP -->/,$p' README.md)
 
     # Create new README with help content inserted
     {
-      echo "$$TOP"
+      echo "$TOP"
       echo '```'
       $in --help
       echo '```'
-      echo "$$BOTTOM"
+      echo "$BOTTOM"
     } > $out
