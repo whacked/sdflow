@@ -792,7 +792,7 @@ func checkIfOutputMoreRecentThanInputs(task *RunnableTask) bool {
 		for _, taskInput := range task.inputs {
 			if inputStat, err := os.Stat(taskInput.path); err == nil {
 				taskInput.mtime = inputStat.ModTime().Unix()
-				if outputTime <= taskInput.mtime {
+				if outputTime < taskInput.mtime {
 					return false // Input is newer than output
 				}
 			}
@@ -850,7 +850,7 @@ func checkIfInputCausesStaleness(task *RunnableTask, taskInput *RunnableTaskInpu
 		// Check if this specific input is newer than output
 		if inputStat, err := os.Stat(taskInput.path); err == nil {
 			inputTime := inputStat.ModTime().Unix()
-			return outputTime <= inputTime
+			return outputTime < inputTime
 		}
 	}
 
