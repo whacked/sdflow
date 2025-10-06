@@ -14,7 +14,7 @@
 
 buildGoApplication {
   pname = "sdflow";
-  version = "20251006.5.c412c92";
+  version = "20251006.7.c022dc6";
   pwd = ./.;
   src = ./.;
   modules = ./gomod2nix.toml;
