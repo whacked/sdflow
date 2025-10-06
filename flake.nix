@@ -17,10 +17,24 @@
           # This has no effect on other platforms.
           callPackage = pkgs.darwin.apple_sdk_12_0.callPackage or pkgs.callPackage;
         in
-        {
-          packages.default = callPackage ./. {
+        let
+          sdflow = callPackage ./. {
             inherit (gomod2nix.legacyPackages.${system}) buildGoApplication;
           };
+        in
+        {
+          packages = {
+            default = sdflow;
+            sdflow = sdflow;
+          };
+
+          apps = {
+            default = {  # change to `sdflow = ...` if you want to use `nix build .#sdflow`
+              type = "app";
+              program = "${sdflow}/bin/sdflow";
+            };
+          };
+
           devShells.default = callPackage ./shell.nix {
             inherit (gomod2nix.legacyPackages.${system}) mkGoEnv gomod2nix;
           };
