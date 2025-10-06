@@ -903,7 +903,7 @@ func printVitalsForTask(task *RunnableTask, taskLookup map[string]*RunnableTask)
 		coloringFunc = color.HiRedString
 	}
 
-	fmt.Fprintf(os.Stderr,
+	fmt.Fprintf(os.Stdout,
 		"╭─❮❮ %s ❯❯\n",
 		coloringFunc("%s", task.targetName),
 	)
@@ -916,13 +916,13 @@ func printVitalsForTask(task *RunnableTask, taskLookup map[string]*RunnableTask)
 
 		// Check if this input causes staleness and override color
 		if isTaskStale && checkIfInputCausesStaleness(task, taskInput) {
-			fmt.Fprintf(os.Stderr,
+			fmt.Fprintf(os.Stdout,
 				"├ %s\n",
 				color.HiMagentaString("%s", inputPath),
 			)
 		} else {
 			colorFunc := getInputColor(taskInput, taskLookup)
-			fmt.Fprintf(os.Stderr,
+			fmt.Fprintf(os.Stdout,
 				"├ %s\n",
 				colorFunc("%s", inputPath),
 			)
@@ -937,35 +937,35 @@ func printVitalsForTask(task *RunnableTask, taskLookup map[string]*RunnableTask)
 			lines := strings.Split(runCommand, "\n")
 			runCommand = lines[0] + "..."
 		}
-		fmt.Fprintf(os.Stderr,
+		fmt.Fprintf(os.Stdout,
 			"├─◁ %s\n",
 			color.YellowString("%s", runCommand),
 		)
 	} else if !isSimpleDownloadTask(task) {
-		fmt.Fprintf(os.Stderr,
+		fmt.Fprintf(os.Stdout,
 			"│ %s\n",
 			color.New(color.FgHiYellow, color.Bold).Sprint("!! NO RUN COMMAND !!"),
 		)
 	}
 
-	fmt.Fprintf(os.Stderr, "│\n")
-	fmt.Fprintf(os.Stderr, "╰─▶ ")
+	fmt.Fprintf(os.Stdout, "│\n")
+	fmt.Fprintf(os.Stdout, "╰─▶ ")
 	if task.taskDeclaration.Out == nil {
 		fmt.Fprint(
-			os.Stderr,
+			os.Stdout,
 			color.CyanString("%s", "<STDOUT>"),
 		)
 	} else {
-		fmt.Fprintf(os.Stderr,
+		fmt.Fprintf(os.Stdout,
 			"%s",
 			color.HiBlueString("%s", normalizePathForDisplay(*task.taskDeclaration.Out)),
 		)
 	}
 	if upToDateString != "" {
-		fmt.Fprintf(os.Stderr, " (%s)", upToDateString)
+		fmt.Fprintf(os.Stdout, " (%s)", upToDateString)
 	}
 
-	fmt.Fprintf(os.Stderr, "\n\n")
+	fmt.Fprintf(os.Stdout, "\n\n")
 }
 
 func substituteWithContext(s string, context map[string]string) *string {
