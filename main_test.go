@@ -2735,3 +2735,359 @@ func TestTaskReferenceExecution(t *testing.T) {
 		t.Errorf("Rendered command %q should not contain literal task name 'producer'", renderedCommand)
 	}
 }
+
+/* -------------------------------------------------------------------------- */
+/*                        Cycle Handling Tests                                */
+/* -------------------------------------------------------------------------- */
+
+func TestSelfLoopCycle_SingleInputOutput(t *testing.T) {
+	// Test A->A: task where input file equals output file (self-modifying task)
+	tempDir := t.TempDir()
+	versionFile := filepath.Join(tempDir, "version.go")
+
+	// Create initial version file
+	initialContent := "package main\nconst Version = \"0.0.1\"\n"
+	if err := os.WriteFile(versionFile, []byte(initialContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(10 * time.Millisecond) // Ensure different mtime
+
+	yamlContent := `
+version.go:
+  in: ` + versionFile + `
+  out: ` + versionFile + `
+  run: echo 'package main\nconst Version = "0.0.2"' > ` + versionFile + `
+`
+
+	pfd := parseFlowDefinitionSource(yamlContent)
+	task := pfd.taskLookup["version.go"]
+
+	if task == nil {
+		t.Fatal("version.go task not found")
+	}
+
+	// Task should be parsed successfully (cycle will be detected at topsort, not parse time)
+	if task.taskDeclaration == nil {
+		t.Fatal("Task declaration should exist")
+	}
+
+	// Execute the task
+	executor := NewRealExecutor(false, false)
+
+	// This should work - the task runs once due to execution state tracking
+	runTask(task, pfd.executionEnv, executor, pfd.taskLookup)
+
+	// Verify task was executed (execution count incremented)
+	if task.executionCount != 1 {
+		t.Errorf("Task should execute once, got executionCount=%d", task.executionCount)
+	}
+
+	// Verify the file was modified
+	content, err := os.ReadFile(versionFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(string(content), "0.0.2") {
+		t.Errorf("File should be updated to 0.0.2, got: %s", string(content))
+	}
+}
+
+func TestSelfLoopCycle_MultipleInputsWithOneMatchingOutput(t *testing.T) {
+	// Test task with multiple inputs where one input equals the output
+	tempDir := t.TempDir()
+	versionFile := filepath.Join(tempDir, "version.go")
+	sourceFile := filepath.Join(tempDir, "source.txt")
+
+	// Create initial files
+	if err := os.WriteFile(versionFile, []byte("version 0.0.1"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sourceFile, []byte("source data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(10 * time.Millisecond)
+
+	yamlContent := `
+update-version:
+  in: [` + sourceFile + `, ` + versionFile + `]
+  out: ` + versionFile + `
+  run: echo "updated from source" > ` + versionFile + `
+`
+
+	pfd := parseFlowDefinitionSource(yamlContent)
+	task := pfd.taskLookup["update-version"]
+
+	if task == nil {
+		t.Fatal("update-version task not found")
+	}
+
+	executor := NewRealExecutor(false, false)
+	runTask(task, pfd.executionEnv, executor, pfd.taskLookup)
+
+	if task.executionCount != 1 {
+		t.Errorf("Task should execute once, got executionCount=%d", task.executionCount)
+	}
+
+	content, err := os.ReadFile(versionFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(string(content), "updated from source") {
+		t.Errorf("File should be updated, got: %s", string(content))
+	}
+}
+
+func TestTwoNodeCycle_AtoB_BtoA(t *testing.T) {
+	// Test A->B->A: two tasks that depend on each other's outputs
+	tempDir := t.TempDir()
+	fileA := filepath.Join(tempDir, "a.txt")
+	fileB := filepath.Join(tempDir, "b.txt")
+
+	// Create initial files
+	if err := os.WriteFile(fileA, []byte("A initial"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fileB, []byte("B initial"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(10 * time.Millisecond)
+
+	yamlContent := `
+task-a:
+  in: ` + fileB + `
+  out: ` + fileA + `
+  run: echo "A from B" > ` + fileA + `
+
+task-b:
+  in: ` + fileA + `
+  out: ` + fileB + `
+  run: echo "B from A" > ` + fileB + `
+`
+
+	pfd := parseFlowDefinitionSource(yamlContent)
+	taskA := pfd.taskLookup["task-a"]
+	taskB := pfd.taskLookup["task-b"]
+
+	if taskA == nil || taskB == nil {
+		t.Fatal("Tasks not found")
+	}
+
+	// Debug: Log dependencies
+	t.Logf("taskLookup keys:")
+	for key := range pfd.taskLookup {
+		t.Logf("  %q", key)
+	}
+	t.Logf("task-a dependencies from map: %v", pfd.taskDependencies["task-a"])
+	t.Logf("task-b dependencies from map: %v", pfd.taskDependencies["task-b"])
+	t.Logf("task-a inputs:")
+	for _, inp := range taskA.inputs {
+		t.Logf("  path=%q", inp.path)
+	}
+	t.Logf("task-b inputs:")
+	for _, inp := range taskB.inputs {
+		t.Logf("  path=%q", inp.path)
+	}
+	t.Logf("task-a out: %q", *taskA.taskDeclaration.Out)
+	t.Logf("task-b out: %q", *taskB.taskDeclaration.Out)
+
+	executor := NewRealExecutor(false, false)
+
+	// Run task-a - it should handle the cycle via execution state
+	runTask(taskA, pfd.executionEnv, executor, pfd.taskLookup)
+
+	// Both tasks should have executed exactly once
+	if taskA.executionCount != 1 {
+		t.Errorf("task-a should execute once, got %d", taskA.executionCount)
+	}
+	if taskB.executionCount != 1 {
+		t.Errorf("task-b should execute once, got %d", taskB.executionCount)
+	}
+
+	// Verify both files were updated
+	contentA, _ := os.ReadFile(fileA)
+	contentB, _ := os.ReadFile(fileB)
+
+	if !strings.Contains(string(contentA), "A from B") {
+		t.Errorf("File A should be updated, got: %s", string(contentA))
+	}
+	if !strings.Contains(string(contentB), "B from A") {
+		t.Errorf("File B should be updated, got: %s", string(contentB))
+	}
+}
+
+func TestThreeNodeCycle_ABC(t *testing.T) {
+	// Test A->B->C->A: three-node cycle
+	tempDir := t.TempDir()
+	fileA := filepath.Join(tempDir, "a.txt")
+	fileB := filepath.Join(tempDir, "b.txt")
+	fileC := filepath.Join(tempDir, "c.txt")
+
+	// Create initial files
+	for _, f := range []string{fileA, fileB, fileC} {
+		if err := os.WriteFile(f, []byte("initial"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	time.Sleep(10 * time.Millisecond)
+
+	yamlContent := `
+task-a:
+  in: ` + fileC + `
+  out: ` + fileA + `
+  run: echo "A updated" > ` + fileA + `
+
+task-b:
+  in: ` + fileA + `
+  out: ` + fileB + `
+  run: echo "B updated" > ` + fileB + `
+
+task-c:
+  in: ` + fileB + `
+  out: ` + fileC + `
+  run: echo "C updated" > ` + fileC + `
+`
+
+	pfd := parseFlowDefinitionSource(yamlContent)
+	taskA := pfd.taskLookup["task-a"]
+	taskB := pfd.taskLookup["task-b"]
+	taskC := pfd.taskLookup["task-c"]
+
+	if taskA == nil || taskB == nil || taskC == nil {
+		t.Fatal("Tasks not found")
+	}
+
+	executor := NewRealExecutor(false, false)
+	runTask(taskA, pfd.executionEnv, executor, pfd.taskLookup)
+
+	// All three tasks should execute exactly once
+	if taskA.executionCount != 1 {
+		t.Errorf("task-a should execute once, got %d", taskA.executionCount)
+	}
+	if taskB.executionCount != 1 {
+		t.Errorf("task-b should execute once, got %d", taskB.executionCount)
+	}
+	if taskC.executionCount != 1 {
+		t.Errorf("task-c should execute once, got %d", taskC.executionCount)
+	}
+}
+
+func TestCycleWithinLargerGraph(t *testing.T) {
+	// Test: Independent->Cycle(A->B->A)->Dependent
+	// Ensures cycles don't break non-cyclic dependencies
+	tempDir := t.TempDir()
+	fileIndep := filepath.Join(tempDir, "independent.txt")
+	fileA := filepath.Join(tempDir, "a.txt")
+	fileB := filepath.Join(tempDir, "b.txt")
+	fileDep := filepath.Join(tempDir, "dependent.txt")
+
+	// Create initial files
+	for _, f := range []string{fileIndep, fileA, fileB} {
+		if err := os.WriteFile(f, []byte("initial"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	time.Sleep(10 * time.Millisecond)
+
+	yamlContent := `
+independent:
+  out: ` + fileIndep + `
+  run: echo "independent" > ` + fileIndep + `
+
+cycle-a:
+  in: [` + fileIndep + `, ` + fileB + `]
+  out: ` + fileA + `
+  run: echo "cycle A" > ` + fileA + `
+
+cycle-b:
+  in: ` + fileA + `
+  out: ` + fileB + `
+  run: echo "cycle B" > ` + fileB + `
+
+dependent:
+  in: ` + fileB + `
+  out: ` + fileDep + `
+  run: echo "dependent" > ` + fileDep + `
+`
+
+	pfd := parseFlowDefinitionSource(yamlContent)
+	taskIndep := pfd.taskLookup["independent"]
+	taskCycleA := pfd.taskLookup["cycle-a"]
+	taskCycleB := pfd.taskLookup["cycle-b"]
+	taskDep := pfd.taskLookup["dependent"]
+
+	if taskIndep == nil || taskCycleA == nil || taskCycleB == nil || taskDep == nil {
+		t.Fatal("Tasks not found")
+	}
+
+	executor := NewRealExecutor(false, false)
+	runTask(taskDep, pfd.executionEnv, executor, pfd.taskLookup)
+
+	// Verify execution: independent may be skipped if up-to-date, others should execute
+	// Since we created files before, independent's output exists and is newer than its inputs
+	if taskIndep.executionState != TaskSkipped {
+		t.Errorf("independent should be skipped (up-to-date), got state %v", taskIndep.executionState)
+	}
+	if taskCycleA.executionCount != 1 {
+		t.Errorf("cycle-a should execute once, got %d", taskCycleA.executionCount)
+	}
+	if taskCycleB.executionCount != 1 {
+		t.Errorf("cycle-b should execute once, got %d", taskCycleB.executionCount)
+	}
+	if taskDep.executionCount != 1 {
+		t.Errorf("dependent should execute once, got %d", taskDep.executionCount)
+	}
+
+	// Verify all files were created
+	for _, f := range []string{fileIndep, fileA, fileB, fileDep} {
+		if _, err := os.Stat(f); err != nil {
+			t.Errorf("File %s should exist: %v", f, err)
+		}
+	}
+}
+
+func TestCycleAlwaysRunsOnReinvocation(t *testing.T) {
+	// Test that cyclic tasks always run on each CLI invocation (treated as always-stale)
+	tempDir := t.TempDir()
+	versionFile := filepath.Join(tempDir, "version.go")
+
+	// Create initial file
+	if err := os.WriteFile(versionFile, []byte("v1"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	yamlContent := `
+version.go:
+  in: ` + versionFile + `
+  out: ` + versionFile + `
+  run: echo "v2" > ` + versionFile + `
+`
+
+	pfd := parseFlowDefinitionSource(yamlContent)
+	task := pfd.taskLookup["version.go"]
+
+	if task == nil {
+		t.Fatal("Task not found")
+	}
+
+	executor := NewRealExecutor(false, false)
+
+	// First invocation
+	runTask(task, pfd.executionEnv, executor, pfd.taskLookup)
+	if task.executionCount != 1 {
+		t.Errorf("First run: expected executionCount=1, got %d", task.executionCount)
+	}
+
+	// Wait to ensure different mtime
+	time.Sleep(10 * time.Millisecond)
+
+	// Reset execution state to simulate new CLI invocation
+	task.executionState = TaskNotStarted
+
+	// Second invocation - should run again because cycles always run
+	runTask(task, pfd.executionEnv, executor, pfd.taskLookup)
+	if task.executionCount != 2 {
+		t.Errorf("Second run: expected executionCount=2, got %d", task.executionCount)
+	}
+}

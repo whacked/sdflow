@@ -671,6 +671,7 @@ type TaskExecutionState int
 
 const (
 	TaskNotStarted TaskExecutionState = iota
+	TaskInProgress                    // currently executing (prevents re-entry in cycles)
 	TaskCompleted
 	TaskSkipped // up-to-date
 )
@@ -1263,17 +1264,27 @@ func handleRemoteInput(task *RunnableTask, input *RunnableTaskInput) bool {
 
 func runTask(task *RunnableTask, env map[string][]string, executor Executor, taskLookup map[string]*RunnableTask) {
 
-	// Check execution state first - prevent duplicate execution
-	if task.executionState == TaskCompleted {
+	// Check execution state first - prevent duplicate execution and cyclic re-entry
+	if task.executionState == TaskCompleted || task.executionState == TaskSkipped {
+		return
+	}
+
+	// If already in progress, we've hit a cycle - stop to prevent infinite loop
+	if task.executionState == TaskInProgress {
 		return
 	}
 
 	// Check if up-to-date (existing logic)
-	if !executor.ShouldForceRun() && checkIfOutputMoreRecentThanInputs(task) {
-		task.executionState = TaskSkipped
-		executor.ShowTaskSkip(task, "up-to-date")
-		return
+	if task.executionState == TaskNotStarted {
+		if !executor.ShouldForceRun() && checkIfOutputMoreRecentThanInputs(task) {
+			task.executionState = TaskSkipped
+			executor.ShowTaskSkip(task, "up-to-date")
+			return
+		}
 	}
+
+	// Mark as in progress to prevent re-entry during cyclic dependency resolution
+	task.executionState = TaskInProgress
 
 	executor.ShowTaskStart(task, taskLookup)
 
@@ -1766,14 +1777,33 @@ func parseFlowDefinitionSource(flowDefinitionSource string) *ParsedFlowDefinitio
 	for targetIdentifier := range taskDependencies {
 		task := taskLookup[targetIdentifier]
 
-		topSortedDependencies := topSortDependencies(taskDependencies, targetIdentifier)
-		for _, dep := range topSortedDependencies[:len(topSortedDependencies)-1] {
-			depTask := taskLookup[dep]
-			if depTask != nil {
-				if depTask.taskDeclaration == nil {
-					bailOnError(fmt.Errorf("subtask %s has no definition!?", dep))
+		topSortedDependencies, err := topSortDependencies(taskDependencies, targetIdentifier)
+		if err != nil {
+			// Cycle detected - this is expected for cyclic tasks
+			// The cycle will be handled by execution state tracking during runTask
+			trace(fmt.Sprintf("Cycle detected for task %s: %v", targetIdentifier, err))
+
+			// For cyclic tasks, add dependencies in the order they appear in the taskDependencies map
+			// The execution state tracking will prevent infinite loops
+			for _, depName := range taskDependencies[targetIdentifier] {
+				depTask := taskLookup[depName]
+				if depTask != nil {
+					if depTask.taskDeclaration == nil {
+						bailOnError(fmt.Errorf("subtask %s has no definition!?", depName))
+					}
+					task.taskDependencies = append(task.taskDependencies, depTask)
 				}
-				task.taskDependencies = append(task.taskDependencies, depTask)
+			}
+		} else {
+			// No cycle - use topologically sorted order
+			for _, dep := range topSortedDependencies[:len(topSortedDependencies)-1] {
+				depTask := taskLookup[dep]
+				if depTask != nil {
+					if depTask.taskDeclaration == nil {
+						bailOnError(fmt.Errorf("subtask %s has no definition!?", dep))
+					}
+					task.taskDependencies = append(task.taskDependencies, depTask)
+				}
 			}
 		}
 	}
@@ -1842,33 +1872,53 @@ func addImplicitDependencies(taskLookup map[string]*RunnableTask, taskDependenci
 		}
 
 		for _, input := range task.inputs {
-			// Check if input path matches any task's output file
-			if producingTask, exists := taskLookup[input.path]; exists {
-				if producingTask.taskDeclaration != nil && producingTask.taskDeclaration.Out != nil &&
-					*producingTask.taskDeclaration.Out == input.path {
+			// Normalize input path for comparison
+			inputPathAbs, err := filepath.Abs(input.path)
+			if err != nil {
+				inputPathAbs = input.path
+			}
 
-					// Find the actual task name that produces this output (not the output file alias)
-					var producingTaskName string
-					for name, t := range taskLookup {
-						if t == producingTask && name == producingTask.targetName {
-							producingTaskName = name
-							break
-						}
+			// Check if input path matches any task's output file
+			// Try both the original path and the absolute path
+			var producingTask *RunnableTask
+			var found bool
+
+			if producingTask, found = taskLookup[input.path]; !found {
+				producingTask, found = taskLookup[inputPathAbs]
+			}
+
+			if found && producingTask != nil {
+				if producingTask.taskDeclaration != nil && producingTask.taskDeclaration.Out != nil {
+					outPathAbs, err := filepath.Abs(*producingTask.taskDeclaration.Out)
+					if err != nil {
+						outPathAbs = *producingTask.taskDeclaration.Out
 					}
 
-					if producingTaskName != "" {
-						// Check if this dependency already exists to avoid duplicates
-						dependencyExists := false
-						for _, existingDep := range taskDependencies[taskName] {
-							if existingDep == producingTaskName {
-								dependencyExists = true
+					// Match if paths are equal (after normalization)
+					if *producingTask.taskDeclaration.Out == input.path || outPathAbs == inputPathAbs {
+						// Find the actual task name that produces this output (not the output file alias)
+						var producingTaskName string
+						for name, t := range taskLookup {
+							if t == producingTask && name == producingTask.targetName {
+								producingTaskName = name
 								break
 							}
 						}
 
-						if !dependencyExists {
-							// Add implicit dependency using the task name, not the output file
-							taskDependencies[taskName] = append(taskDependencies[taskName], producingTaskName)
+						if producingTaskName != "" {
+							// Check if this dependency already exists to avoid duplicates
+							dependencyExists := false
+							for _, existingDep := range taskDependencies[taskName] {
+								if existingDep == producingTaskName {
+									dependencyExists = true
+									break
+								}
+							}
+
+							if !dependencyExists {
+								// Add implicit dependency using the task name, not the output file
+								taskDependencies[taskName] = append(taskDependencies[taskName], producingTaskName)
+							}
 						}
 					}
 				}

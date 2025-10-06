@@ -49,7 +49,7 @@ func trace(msg string) {
 	}
 }
 
-func topSortDependencies(taskDependencies map[string][]string, targetTask string) []string {
+func topSortDependencies(taskDependencies map[string][]string, targetTask string) ([]string, error) {
 	/*
 		taskDependencies := map[string][]string{
 			"task1": {},
@@ -57,7 +57,7 @@ func topSortDependencies(taskDependencies map[string][]string, targetTask string
 			"task3": {"task2"},
 		}
 
-		topSortedDependencies := topSortDependencies(taskDependencies, "task3")
+		topSortedDependencies, err := topSortDependencies(taskDependencies, "task3")
 		for _, task := range topSortedDependencies {
 			fmt.Println(task)
 		}
@@ -74,8 +74,7 @@ func topSortDependencies(taskDependencies map[string][]string, targetTask string
 	}
 
 	sorted, err := graph.TopSort(targetTask)
-	bailOnError(err)
-	return sorted
+	return sorted, err
 }
 
 func isPath(s string) bool {
