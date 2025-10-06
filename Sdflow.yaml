@@ -45,6 +45,15 @@ version.go:
 
     const version = "'$today.$number_commits_today.$latest_sha'"' > $out
 
+update-version-files:
+  in:
+    - version.go
+    - default.nix
+  run: |
+    version_string=$(cat ${in.0} | tail -1 | awk '{print $NF}' | tr -d '"')
+    current_default_nix=$(cat ${in.1})
+    echo -e "$current_default_nix" | sed -E 's|version\s+=.+;|version = "'$version_string'";|' | tee ${in.1}
+
 version:
   in: version.go
   run: cat $in | tail -1 | awk '{print $NF}' | tr -d '"'
