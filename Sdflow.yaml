@@ -45,7 +45,7 @@ version.go:
 
     const version = "'$today.$number_commits_today.$latest_sha'"' > $out
 
-update-version-files:
+./default.nix:
   in:
     - version.go
     - default.nix
