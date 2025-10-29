@@ -681,9 +681,11 @@ hello:
 	if len(task.inputs) != 1 || !strings.HasSuffix(task.inputs[0].path, "schemas/foo.txt") {
 		t.Fatalf("input not parsed/substituted correctly: %+v", task.inputs)
 	}
-	if task.taskDeclaration == nil || task.taskDeclaration.Out == nil ||
-		*task.taskDeclaration.Out != "bar.txt" {
+	if task.taskDeclaration == nil || task.taskDeclaration.Out == nil {
 		t.Fatalf("out path wrong: %+v", task.taskDeclaration)
+	}
+	if outStr, ok := task.taskDeclaration.Out.(string); !ok || outStr != "bar.txt" {
+		t.Fatalf("out path wrong: expected bar.txt, got %v", task.taskDeclaration.Out)
 	}
 }
 
@@ -710,8 +712,8 @@ SCHEMAS_DIR: ./schemas
 	if task.taskDeclaration.Out == nil {
 		t.Fatalf("taskDeclaration.Out is nil, expected Out: %q", expectedOut)
 	}
-	if *task.taskDeclaration.Out != expectedOut {
-		t.Fatalf("out path wrong: expected %q, got %q (taskDeclaration: %+v)", expectedOut, *task.taskDeclaration.Out, task.taskDeclaration)
+	if outStr, ok := task.taskDeclaration.Out.(string); !ok || outStr != expectedOut {
+		t.Fatalf("out path wrong: expected %q, got %v (taskDeclaration: %+v)", expectedOut, task.taskDeclaration.Out, task.taskDeclaration)
 	}
 }
 
@@ -1497,8 +1499,8 @@ old-style-task:
 		t.Fatalf("Output path not set")
 	}
 	// Output path will be converted to relative by getPathRelativeToCwd
-	if !strings.HasSuffix(*task.taskDeclaration.Out, "myproject.out") {
-		t.Fatalf("Expected output path to end with 'myproject.out', got %s", *task.taskDeclaration.Out)
+	if outStr, ok := task.taskDeclaration.Out.(string); !ok || !strings.HasSuffix(outStr, "myproject.out") {
+		t.Fatalf("Expected output path to end with 'myproject.out', got %v", task.taskDeclaration.Out)
 	}
 }
 
@@ -2147,9 +2149,12 @@ parallel-sha256-test:
 			t.Error("Expected OutSha256 to be set after parallel execution with updateSha256=true")
 		} else {
 			// Verify it looks like a valid SHA256 (64 hex characters)
-			sha256Val := *task.taskDeclaration.OutSha256
-			if len(sha256Val) != 64 {
-				t.Errorf("Expected SHA256 length 64, got %d: %s", len(sha256Val), sha256Val)
+			if sha256Val, ok := task.taskDeclaration.OutSha256.(string); ok {
+				if len(sha256Val) != 64 {
+					t.Errorf("Expected SHA256 length 64, got %d: %s", len(sha256Val), sha256Val)
+				}
+			} else {
+				t.Errorf("Expected OutSha256 to be string, got %T", task.taskDeclaration.OutSha256)
 			}
 		}
 		
@@ -2889,8 +2894,8 @@ task-b:
 	for _, inp := range taskB.inputs {
 		t.Logf("  path=%q", inp.path)
 	}
-	t.Logf("task-a out: %q", *taskA.taskDeclaration.Out)
-	t.Logf("task-b out: %q", *taskB.taskDeclaration.Out)
+	t.Logf("task-a out: %v", taskA.taskDeclaration.Out)
+	t.Logf("task-b out: %v", taskB.taskDeclaration.Out)
 
 	executor := NewRealExecutor(false, false)
 
@@ -3089,5 +3094,358 @@ version.go:
 	runTask(task, pfd.executionEnv, executor, pfd.taskLookup)
 	if task.executionCount != 2 {
 		t.Errorf("Second run: expected executionCount=2, got %d", task.executionCount)
+	}
+}
+
+// Tests for multiple outputs feature
+
+func TestParseSingleOutput(t *testing.T) {
+	yaml := `
+single-output:
+  in: A.txt
+  out: single.txt
+  run: cp $in $out
+`
+	pfd := parseFlowDefinitionSource(yaml)
+	task, ok := pfd.taskLookup["single-output"]
+	if !ok {
+		t.Fatal("task not found")
+	}
+	
+	// Out should be a string
+	if task.taskDeclaration.Out == nil {
+		t.Fatal("Out is nil")
+	}
+	
+	outStr, ok := task.taskDeclaration.Out.(string)
+	if !ok {
+		t.Fatalf("Out should be string, got %T", task.taskDeclaration.Out)
+	}
+	if outStr != "single.txt" {
+		t.Fatalf("expected 'single.txt', got %q", outStr)
+	}
+}
+
+func TestParseSingleOutputWithSha256(t *testing.T) {
+	yaml := `
+single-output-sha:
+  in: A.txt
+  out: single.txt
+  out.sha256: "a948904f2f0f479b8f8197694b30184b0d2ed1c1cd2a1ec0fb85d299a192a447"
+  run: cp $in $out
+`
+	pfd := parseFlowDefinitionSource(yaml)
+	task, ok := pfd.taskLookup["single-output-sha"]
+	if !ok {
+		t.Fatal("task not found")
+	}
+	
+	// OutSha256 should be a string
+	if task.taskDeclaration.OutSha256 == nil {
+		t.Fatal("OutSha256 is nil")
+	}
+	
+	shaStr, ok := task.taskDeclaration.OutSha256.(string)
+	if !ok {
+		t.Fatalf("OutSha256 should be string, got %T", task.taskDeclaration.OutSha256)
+	}
+	expectedSha := "a948904f2f0f479b8f8197694b30184b0d2ed1c1cd2a1ec0fb85d299a192a447"
+	if shaStr != expectedSha {
+		t.Fatalf("expected %q, got %q", expectedSha, shaStr)
+	}
+}
+
+func TestParseMultipleOutputsAsList(t *testing.T) {
+	yaml := `
+multi-output-list:
+  in: A.txt
+  out:
+    - output1.txt
+    - output2.txt
+    - output3.txt
+  run: echo "test"
+`
+	pfd := parseFlowDefinitionSource(yaml)
+	task, ok := pfd.taskLookup["multi-output-list"]
+	if !ok {
+		t.Fatal("task not found")
+	}
+	
+	// Out should be a slice
+	if task.taskDeclaration.Out == nil {
+		t.Fatal("Out is nil")
+	}
+	
+	outSlice, ok := task.taskDeclaration.Out.([]interface{})
+	if !ok {
+		t.Fatalf("Out should be []interface{}, got %T", task.taskDeclaration.Out)
+	}
+	
+	if len(outSlice) != 3 {
+		t.Fatalf("expected 3 outputs, got %d", len(outSlice))
+	}
+	
+	expectedOutputs := []string{"output1.txt", "output2.txt", "output3.txt"}
+	for i, expected := range expectedOutputs {
+		actual, ok := outSlice[i].(string)
+		if !ok {
+			t.Fatalf("output[%d] should be string, got %T", i, outSlice[i])
+		}
+		if actual != expected {
+			t.Fatalf("output[%d]: expected %q, got %q", i, expected, actual)
+		}
+	}
+}
+
+func TestParseMultipleOutputsAsMap(t *testing.T) {
+	yaml := `
+multi-output-map:
+  in: A.txt
+  out:
+    first: output1.txt
+    second: output2.txt
+    third: output3.txt
+  run: echo "test"
+`
+	pfd := parseFlowDefinitionSource(yaml)
+	task, ok := pfd.taskLookup["multi-output-map"]
+	if !ok {
+		t.Fatal("task not found")
+	}
+	
+	// Out should be a map
+	if task.taskDeclaration.Out == nil {
+		t.Fatal("Out is nil")
+	}
+	
+	outMap, ok := task.taskDeclaration.Out.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Out should be map[string]interface{}, got %T", task.taskDeclaration.Out)
+	}
+	
+	expectedOutputs := map[string]string{
+		"first":  "output1.txt",
+		"second": "output2.txt",
+		"third":  "output3.txt",
+	}
+	
+	if len(outMap) != len(expectedOutputs) {
+		t.Fatalf("expected %d outputs, got %d", len(expectedOutputs), len(outMap))
+	}
+	
+	for key, expectedVal := range expectedOutputs {
+		actualVal, ok := outMap[key]
+		if !ok {
+			t.Fatalf("output key %q not found", key)
+		}
+		actualStr, ok := actualVal.(string)
+		if !ok {
+			t.Fatalf("output[%q] should be string, got %T", key, actualVal)
+		}
+		if actualStr != expectedVal {
+			t.Fatalf("output[%q]: expected %q, got %q", key, expectedVal, actualStr)
+		}
+	}
+}
+
+func TestParseMultipleOutputsWithSha256Map(t *testing.T) {
+	yaml := `
+multi-output-sha:
+  in: A.txt
+  out:
+    alpha: output1.txt
+    beta: output2.txt
+  out.sha256:
+    alpha: "a948904f2f0f479b8f8197694b30184b0d2ed1c1cd2a1ec0fb85d299a192a447"
+    beta: "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+  run: echo "test"
+`
+	pfd := parseFlowDefinitionSource(yaml)
+	task, ok := pfd.taskLookup["multi-output-sha"]
+	if !ok {
+		t.Fatal("task not found")
+	}
+	
+	// OutSha256 should be a map
+	if task.taskDeclaration.OutSha256 == nil {
+		t.Fatal("OutSha256 is nil")
+	}
+	
+	shaMap, ok := task.taskDeclaration.OutSha256.(map[string]interface{})
+	if !ok {
+		t.Fatalf("OutSha256 should be map[string]interface{}, got %T", task.taskDeclaration.OutSha256)
+	}
+	
+	expectedShas := map[string]string{
+		"alpha": "a948904f2f0f479b8f8197694b30184b0d2ed1c1cd2a1ec0fb85d299a192a447",
+		"beta":  "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
+	}
+	
+	for key, expectedSha := range expectedShas {
+		actualSha, ok := shaMap[key]
+		if !ok {
+			t.Fatalf("sha256 key %q not found", key)
+		}
+		actualStr, ok := actualSha.(string)
+		if !ok {
+			t.Fatalf("sha256[%q] should be string, got %T", key, actualSha)
+		}
+		if actualStr != expectedSha {
+			t.Fatalf("sha256[%q]: expected %q, got %q", key, expectedSha, actualStr)
+		}
+	}
+}
+
+// Comprehensive tests for input and output rendering parity
+
+func TestFieldExpansion_InputAndOutputParity(t *testing.T) {
+	// This test ensures input and output expansion have identical semantics
+	tests := []struct {
+		name        string
+		field       string // "in" or "out"
+		values      []string
+		aliases     map[string]string // field.alias -> value
+		template    string
+		expected    string
+		shouldError bool
+	}{
+		// Array indexing tests
+		{
+			name:     "indexed access ${field[0]}",
+			field:    "in",
+			values:   []string{"/path/to/file1.txt", "/path/to/file2.txt"},
+			template: "${in[0]}",
+			expected: "/path/to/file1.txt",
+		},
+		{
+			name:     "indexed access ${field[1]}",
+			field:    "in",
+			values:   []string{"/path/to/file1.txt", "/path/to/file2.txt"},
+			template: "${in[1]}",
+			expected: "/path/to/file2.txt",
+		},
+		{
+			name:        "indexed access out of range",
+			field:       "in",
+			values:      []string{"/path/to/file1.txt"},
+			template:    "${in[5]}",
+			shouldError: true,
+		},
+		// Dot-notation indexing
+		{
+			name:     "dot-indexed access ${field.0}",
+			field:    "out",
+			values:   []string{"/tmp/out1.txt", "/tmp/out2.txt"},
+			template: "${out.0}",
+			expected: "/tmp/out1.txt",
+		},
+		{
+			name:     "dot-indexed access ${field.1}",
+			field:    "out",
+			values:   []string{"/tmp/out1.txt", "/tmp/out2.txt"},
+			template: "${out.1}",
+			expected: "/tmp/out2.txt",
+		},
+		// Aliased/mapped access
+		{
+			name:     "aliased access ${field.alias}",
+			field:    "in",
+			values:   []string{"/path/to/file1.txt"},
+			aliases:  map[string]string{"in.source": "/path/to/source.txt"},
+			template: "${in.source}",
+			expected: "/path/to/source.txt",
+		},
+		{
+			name:        "undefined alias",
+			field:       "out",
+			values:      []string{"/tmp/out.txt"},
+			template:    "${out.missing}",
+			shouldError: true,
+		},
+		// All values expansion
+		{
+			name:     "all values ${field}",
+			field:    "in",
+			values:   []string{"/file1.txt", "/file2.txt", "/file3.txt"},
+			template: "${in}",
+			expected: "/file1.txt /file2.txt /file3.txt",
+		},
+		{
+			name:     "all values $field unbraced",
+			field:    "out",
+			values:   []string{"/out1.txt", "/out2.txt"},
+			template: "$out",
+			expected: "/out1.txt /out2.txt",
+		},
+		// Mixed usage
+		{
+			name:     "mixed indexed and all",
+			field:    "in",
+			values:   []string{"/a.txt", "/b.txt", "/c.txt"},
+			template: "cat ${in[0]} ${in[2]} > output && echo $in",
+			expected: "cat /a.txt /c.txt > output && echo /a.txt /b.txt /c.txt",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Build taskEnv
+			taskEnv := make(map[string][]string)
+			taskEnv[tt.field] = tt.values
+			for alias, value := range tt.aliases {
+				taskEnv[alias] = []string{value}
+			}
+
+			result, err := expandSdflowBuiltins(tt.template, taskEnv)
+
+			if tt.shouldError {
+				if err == nil {
+					t.Errorf("Expected error but got none. Result: %s", result)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Unexpected error: %v", err)
+				}
+				if result != tt.expected {
+					t.Errorf("Expected %q, got %q", tt.expected, result)
+				}
+			}
+		})
+	}
+}
+
+func TestOutputExpansion_AllSyntaxFormats(t *testing.T) {
+	// Specific test for output expansion with all supported syntaxes
+	taskEnv := make(map[string][]string)
+	taskEnv["out"] = []string{"/tmp/deleteme.1", "/tmp/deleteme.2", "/tmp/deleteme.3"}
+	taskEnv["out.first"] = []string{"/tmp/mapped-first.txt"}
+	taskEnv["out.second"] = []string{"/tmp/mapped-second.txt"}
+
+	tests := []struct {
+		template string
+		expected string
+	}{
+		{"${out[0]}", "/tmp/deleteme.1"},
+		{"${out[1]}", "/tmp/deleteme.2"},
+		{"${out[2]}", "/tmp/deleteme.3"},
+		{"${out.0}", "/tmp/deleteme.1"},
+		{"${out.1}", "/tmp/deleteme.2"},
+		{"${out}", "/tmp/deleteme.1 /tmp/deleteme.2 /tmp/deleteme.3"},
+		{"$out", "/tmp/deleteme.1 /tmp/deleteme.2 /tmp/deleteme.3"},
+		{"${out.first}", "/tmp/mapped-first.txt"},
+		{"${out.second}", "/tmp/mapped-second.txt"},
+		{"echo ${out[0]} ${out[1]} && touch $out", "echo /tmp/deleteme.1 /tmp/deleteme.2 && touch /tmp/deleteme.1 /tmp/deleteme.2 /tmp/deleteme.3"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.template, func(t *testing.T) {
+			result, err := expandSdflowBuiltins(tt.template, taskEnv)
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			if result != tt.expected {
+				t.Errorf("Expected %q, got %q", tt.expected, result)
+			}
+		})
 	}
 }

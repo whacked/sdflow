@@ -556,6 +556,100 @@ func prepareExpandableTemplate(template string, executionEnv map[string][]string
 // handles: $in, $out, ${in}, ${out}, ${in[N]}, and ${in.ALIAS}
 // All other variables (including YAML globals and shell variables) are left untouched.
 // Returns an error if builtin variable references are invalid (e.g., out of range index or undefined alias).
+// createFieldHandlers creates a set of pattern handlers for a field (in or out)
+// This eliminates duplication between input and output expansion logic
+func createFieldHandlers(fieldName string, taskEnv map[string][]string) []struct {
+	regex   *regexp.Regexp
+	handler func(match string, groups []string) (string, error)
+} {
+	return []struct {
+		regex   *regexp.Regexp
+		handler func(match string, groups []string) (string, error)
+	}{
+		// ${field[N]} - indexed access (throws on out of range)
+		{
+			regex: regexp.MustCompile(fmt.Sprintf(`\$\{%s\[(\d+)\]\}`, fieldName)),
+			handler: func(match string, groups []string) (string, error) {
+				if len(groups) < 2 {
+					return "", fmt.Errorf("invalid indexed %s syntax: %s", fieldName, match)
+				}
+				index, err := strconv.Atoi(groups[1])
+				if err != nil {
+					return "", fmt.Errorf("invalid index in %s: %v", match, err)
+				}
+				values, exists := taskEnv[fieldName]
+				if !exists {
+					return match, nil // Leave untouched if field not defined
+				}
+				if index >= len(values) {
+					return "", fmt.Errorf("index %d out of range for %s array (length %d)", index, fieldName, len(values))
+				}
+				return values[index], nil
+			},
+		},
+		// ${field.N} - dot-notation indexed access
+		{
+			regex: regexp.MustCompile(fmt.Sprintf(`\$\{%s\.(\d+)\}`, fieldName)),
+			handler: func(match string, groups []string) (string, error) {
+				if len(groups) < 2 {
+					return "", fmt.Errorf("invalid dot-indexed %s syntax: %s", fieldName, match)
+				}
+				index, err := strconv.Atoi(groups[1])
+				if err != nil {
+					return "", fmt.Errorf("invalid index in %s: %v", match, err)
+				}
+				values, exists := taskEnv[fieldName]
+				if !exists {
+					return match, nil // Leave untouched if field not defined
+				}
+				if index >= len(values) {
+					return "", fmt.Errorf("index %d out of range for %s array (length %d)", index, fieldName, len(values))
+				}
+				return values[index], nil
+			},
+		},
+		// ${field.ALIAS} - aliased/mapped access (throws on undefined alias)
+		{
+			regex: regexp.MustCompile(fmt.Sprintf(`\$\{%s\.([a-zA-Z_][a-zA-Z0-9_]*)\}`, fieldName)),
+			handler: func(match string, groups []string) (string, error) {
+				if len(groups) < 2 {
+					return "", fmt.Errorf("invalid aliased %s syntax: %s", fieldName, match)
+				}
+				alias := groups[1]
+				// Check if this is a numeric alias (handled by dot-notation pattern above)
+				if _, err := strconv.Atoi(alias); err == nil {
+					return match, nil // Let the numeric pattern handle it
+				}
+				aliasKey := fmt.Sprintf("%s.%s", fieldName, alias)
+				if aliasValues, exists := taskEnv[aliasKey]; exists && len(aliasValues) > 0 {
+					return aliasValues[0], nil
+				}
+				return "", fmt.Errorf("undefined %s alias: %s", fieldName, alias)
+			},
+		},
+		// ${field} - all values as space-separated string
+		{
+			regex: regexp.MustCompile(fmt.Sprintf(`\$\{%s\}`, fieldName)),
+			handler: func(match string, groups []string) (string, error) {
+				if values, exists := taskEnv[fieldName]; exists {
+					return strings.Join(values, " "), nil
+				}
+				return match, nil // Leave untouched if field not defined
+			},
+		},
+		// $field - unbraced version, all values space-separated
+		{
+			regex: regexp.MustCompile(fmt.Sprintf(`\$%s\b`, fieldName)),
+			handler: func(match string, groups []string) (string, error) {
+				if values, exists := taskEnv[fieldName]; exists {
+					return strings.Join(values, " "), nil
+				}
+				return match, nil // Leave untouched if field not defined
+			},
+		},
+	}
+}
+
 func expandSdflowBuiltins(template string, taskEnv map[string][]string) (string, error) {
 	// Handle $$ escape sequences by temporarily replacing them, but only for builtins
 	// Since we don't substitute non-builtins anymore, we only need to escape builtin patterns
@@ -569,113 +663,18 @@ func expandSdflowBuiltins(template string, taskEnv map[string][]string) (string,
 	bracedEscapePattern := regexp.MustCompile(`\$\$\{(in|out)([^}]*)\}`)
 	result = bracedEscapePattern.ReplaceAllString(result, placeholder+"{$1$2}")
 
-	// Define sdflow builtin patterns and their handlers
-	patterns := []struct {
+	// Create handlers for both 'in' and 'out' fields using the generic factory
+	// This ensures complete parity between input and output expansion semantics
+	var patterns []struct {
 		regex   *regexp.Regexp
 		handler func(match string, groups []string) (string, error)
-	}{
-		// ${in[N]} - indexed input access (throws on out of range)
-		{
-			regex: regexp.MustCompile(`\$\{in\[(\d+)\]\}`),
-			handler: func(match string, groups []string) (string, error) {
-				if len(groups) < 2 {
-					return "", fmt.Errorf("invalid indexed input syntax: %s", match)
-				}
-				index, err := strconv.Atoi(groups[1])
-				if err != nil {
-					return "", fmt.Errorf("invalid index in %s: %v", match, err)
-				}
-				inValues, exists := taskEnv["in"]
-				if !exists {
-					return match, nil // Leave untouched if 'in' not defined
-				}
-				if index >= len(inValues) {
-					return "", fmt.Errorf("index %d out of range for input array (length %d)", index, len(inValues))
-				}
-				return inValues[index], nil
-			},
-		},
-		// ${in.N} - dot-notation indexed input access (new preferred syntax)
-		{
-			regex: regexp.MustCompile(`\$\{in\.(\d+)\}`),
-			handler: func(match string, groups []string) (string, error) {
-				if len(groups) < 2 {
-					return "", fmt.Errorf("invalid dot-indexed input syntax: %s", match)
-				}
-				index, err := strconv.Atoi(groups[1])
-				if err != nil {
-					return "", fmt.Errorf("invalid index in %s: %v", match, err)
-				}
-				inValues, exists := taskEnv["in"]
-				if !exists {
-					return match, nil // Leave untouched if 'in' not defined
-				}
-				if index >= len(inValues) {
-					return "", fmt.Errorf("index %d out of range for input array (length %d)", index, len(inValues))
-				}
-				return inValues[index], nil
-			},
-		},
-		// ${in.ALIAS} - aliased input access (throws on undefined alias)
-		{
-			regex: regexp.MustCompile(`\$\{in\.([a-zA-Z_][a-zA-Z0-9_]*)\}`),
-			handler: func(match string, groups []string) (string, error) {
-				if len(groups) < 2 {
-					return "", fmt.Errorf("invalid aliased input syntax: %s", match)
-				}
-				alias := groups[1]
-				// Check if this is a numeric alias (handled by dot-notation pattern above)
-				if _, err := strconv.Atoi(alias); err == nil {
-					return match, nil // Let the numeric pattern handle it
-				}
-				aliasKey := fmt.Sprintf("in.%s", alias)
-				if aliasValues, exists := taskEnv[aliasKey]; exists && len(aliasValues) > 0 {
-					return aliasValues[0], nil
-				}
-				return "", fmt.Errorf("undefined input alias: %s", alias)
-			},
-		},
-		// ${in} - all inputs as space-separated string
-		{
-			regex: regexp.MustCompile(`\$\{in\}`),
-			handler: func(match string, groups []string) (string, error) {
-				if inValues, exists := taskEnv["in"]; exists {
-					return strings.Join(inValues, " "), nil
-				}
-				return match, nil // Leave untouched if 'in' not defined
-			},
-		},
-		// ${out} - output path
-		{
-			regex: regexp.MustCompile(`\$\{out\}`),
-			handler: func(match string, groups []string) (string, error) {
-				if outValues, exists := taskEnv["out"]; exists && len(outValues) > 0 {
-					return outValues[0], nil
-				}
-				return match, nil // Leave untouched if 'out' not defined
-			},
-		},
-		// $in - all inputs as space-separated string (unbraced)
-		{
-			regex: regexp.MustCompile(`\$in\b`),
-			handler: func(match string, groups []string) (string, error) {
-				if inValues, exists := taskEnv["in"]; exists {
-					return strings.Join(inValues, " "), nil
-				}
-				return match, nil // Leave untouched if 'in' not defined
-			},
-		},
-		// $out - output path (unbraced)
-		{
-			regex: regexp.MustCompile(`\$out\b`),
-			handler: func(match string, groups []string) (string, error) {
-				if outValues, exists := taskEnv["out"]; exists && len(outValues) > 0 {
-					return outValues[0], nil
-				}
-				return match, nil // Leave untouched if 'out' not defined
-			},
-		},
 	}
+
+	// Add input handlers: ${in[0]}, ${in.key}, ${in}, $in
+	patterns = append(patterns, createFieldHandlers("in", taskEnv)...)
+
+	// Add output handlers: ${out[0]}, ${out.key}, ${out}, $out
+	patterns = append(patterns, createFieldHandlers("out", taskEnv)...)
 
 	// Apply each pattern
 	for _, pattern := range patterns {

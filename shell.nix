@@ -61,6 +61,7 @@ pkgs.mkShell {
     pkgs.jq
     pkgs.minio
     pkgs.minio-client
+    pkgs.nodejs
     go-jsonschema
   ]
   ++ nix_shortcuts.buildInputs
@@ -95,6 +96,8 @@ pkgs.mkShell {
     export PATH=$PWD/result/bin:$PATH
     eval "$(sdflow --completions bash)"
   '' + ''
+    alias sdf=sdflow
+    complete -F _sdflow_auto_complete sdf
     echo-shortcuts ${__curPos.file}
     unset shellHook
   '';  # join strings with +

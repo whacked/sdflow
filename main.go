@@ -698,6 +698,145 @@ type RunnableTask struct {
 	isReferenced     bool          // true if this task is referenced by other tasks
 }
 
+// Helper functions for handling multiple input/output types (shared logic)
+
+// extractPathsFromField extracts all path strings from a field that can be:
+// - string: returns single-element slice
+// - []interface{}: extracts all strings from array
+// - map[string]interface{}: extracts all string values (sorted by key for consistency)
+// This is used for both inputs and outputs to avoid duplication
+func extractPathsFromField(field interface{}) []string {
+	if field == nil {
+		return nil
+	}
+
+	switch v := field.(type) {
+	case string:
+		return []string{v}
+	case []interface{}:
+		paths := make([]string, 0, len(v))
+		for _, item := range v {
+			if str, ok := item.(string); ok {
+				paths = append(paths, str)
+			}
+		}
+		return paths
+	case map[string]interface{}:
+		// For maps, return all values in a consistent order (sorted by key)
+		keys := make([]string, 0, len(v))
+		for k := range v {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		paths := make([]string, 0, len(keys))
+		for _, k := range keys {
+			if str, ok := v[k].(string); ok {
+				paths = append(paths, str)
+			}
+		}
+		return paths
+	default:
+		return nil
+	}
+}
+
+// processPathString processes a single path string with variable substitution and normalization
+// This is shared logic for both inputs and outputs
+func processPathString(pathStr string, env map[string]string) string {
+	if isPath(pathStr) {
+		return pathStr
+	}
+	return getPathRelativeToCwd(*substituteWithContext(pathStr, env))
+}
+
+// processFieldForPaths processes a field (string/array/map) and normalizes all paths
+// Returns the field in the same structure but with processed paths
+func processFieldForPaths(field interface{}, env map[string]string) interface{} {
+	if field == nil {
+		return nil
+	}
+
+	switch v := field.(type) {
+	case string:
+		return processPathString(v, env)
+	case []interface{}:
+		// Process each element in the array
+		processed := make([]interface{}, len(v))
+		for i, item := range v {
+			if str, ok := item.(string); ok {
+				processed[i] = processPathString(str, env)
+			} else {
+				processed[i] = item
+			}
+		}
+		return processed
+	case map[string]interface{}:
+		// Process each value in the map
+		processed := make(map[string]interface{})
+		for key, val := range v {
+			if str, ok := val.(string); ok {
+				processed[key] = processPathString(str, env)
+			} else {
+				processed[key] = val
+			}
+		}
+		return processed
+	default:
+		return field
+	}
+}
+
+// getOutputPaths returns all output file paths from the Out field
+// Returns nil if Out is nil, otherwise returns a slice of paths
+func getOutputPaths(out interface{}) []string {
+	return extractPathsFromField(out)
+}
+
+// getPrimaryOutputPath returns the first/primary output path for display purposes
+func getPrimaryOutputPath(out interface{}) string {
+	paths := getOutputPaths(out)
+	if len(paths) > 0 {
+		return paths[0]
+	}
+	return ""
+}
+
+// getOutputSha256Map returns a map of output file paths to their SHA256 hashes
+func getOutputSha256Map(out interface{}, outSha256 interface{}) map[string]string {
+	if outSha256 == nil {
+		return nil
+	}
+
+	result := make(map[string]string)
+
+	switch sha := outSha256.(type) {
+	case string:
+		// Single SHA256 for single output
+		if outStr, ok := out.(string); ok {
+			result[outStr] = sha
+		}
+	case map[string]interface{}:
+		// Map of SHA256s
+		for key, val := range sha {
+			if shaStr, ok := val.(string); ok {
+				// If out is a map, use the mapped path
+				if outMap, ok := out.(map[string]interface{}); ok {
+					if pathStr, ok := outMap[key].(string); ok {
+						result[pathStr] = shaStr
+					}
+				}
+			}
+		}
+	}
+
+	return result
+}
+
+// hasOutput returns true if the task has any output (file or CAS)
+func hasOutput(taskDecl *RunnableSchemaJson) bool {
+	return taskDecl.Out != nil || taskDecl.OutSha256 != nil
+}
+
 func discoverFlowDefinitionFile() string {
 	for _, candidate := range FLOW_DEFINITION_FILE_CANDIDATES {
 		if _, err := os.Stat(candidate); err == nil {
@@ -738,7 +877,7 @@ func prettyPrintTask(task *RunnableTask) {
 		fmt.Println("  In:", task.taskDeclaration.In)
 	}
 	if task.taskDeclaration.Out != nil {
-		fmt.Println("  Out:", *task.taskDeclaration.Out)
+		fmt.Println("  Out:", task.taskDeclaration.Out)
 	}
 	if task.taskDeclaration.Run != nil {
 		fmt.Println("  Run:", *task.taskDeclaration.Run)
@@ -747,7 +886,7 @@ func prettyPrintTask(task *RunnableTask) {
 		fmt.Println("  In SHA256:", task.taskDeclaration.InSha256)
 	}
 	if task.taskDeclaration.OutSha256 != nil {
-		fmt.Println("  Out SHA256:", *task.taskDeclaration.OutSha256)
+		fmt.Println("  Out SHA256:", task.taskDeclaration.OutSha256)
 	}
 }
 
@@ -780,21 +919,32 @@ func checkIfOutputMoreRecentThanInputs(task *RunnableTask) bool {
 
 	// Handle tasks with explicit output files
 	if task.taskDeclaration.Out != nil {
-		// Check if output file exists
-		outputStat, err := os.Stat(*task.taskDeclaration.Out)
-		if err != nil {
-			// Output file doesn't exist, so task needs to run
+		outputPaths := getOutputPaths(task.taskDeclaration.Out)
+		if len(outputPaths) == 0 {
 			return false
 		}
 
-		outputTime := outputStat.ModTime().Unix()
+		// For multiple outputs: ALL outputs must be newer than ALL inputs
+		// Find the minimum (oldest) output mtime across all outputs
+		var minOutputTime int64 = -1
+		for _, outputPath := range outputPaths {
+			outputStat, err := os.Stat(outputPath)
+			if err != nil {
+				// If any output file doesn't exist, task needs to run
+				return false
+			}
+			outputTime := outputStat.ModTime().Unix()
+			if minOutputTime == -1 || outputTime < minOutputTime {
+				minOutputTime = outputTime
+			}
+		}
 
-		// Check all inputs - if any input is newer than output, task needs to run
+		// Check all inputs - if any input is newer than the oldest output, task needs to run
 		for _, taskInput := range task.inputs {
 			if inputStat, err := os.Stat(taskInput.path); err == nil {
 				taskInput.mtime = inputStat.ModTime().Unix()
-				if outputTime < taskInput.mtime {
-					return false // Input is newer than output
+				if minOutputTime < taskInput.mtime {
+					return false // Input is newer than (at least one) output
 				}
 			}
 		}
@@ -803,23 +953,60 @@ func checkIfOutputMoreRecentThanInputs(task *RunnableTask) bool {
 
 	// Handle CAS-cached tasks (no explicit out: but has out.sha256)
 	if task.taskDeclaration.Out == nil && task.taskDeclaration.OutSha256 != nil {
-		// Task has cached output, check if CAS object exists
-		casPath := getCASObjectPath(CACHE_DIRECTORY, ContentDigest(*task.taskDeclaration.OutSha256))
-		if casStat, err := os.Stat(casPath); err == nil {
-			casTime := casStat.ModTime().Unix()
+		// For CAS tasks with single SHA256
+		if shaStr, ok := task.taskDeclaration.OutSha256.(string); ok {
+			casPath := getCASObjectPath(CACHE_DIRECTORY, ContentDigest(shaStr))
+			if casStat, err := os.Stat(casPath); err == nil {
+				casTime := casStat.ModTime().Unix()
 
-			// Check all inputs - if any input is newer than CAS object, task needs to run
-			for _, taskInput := range task.inputs {
-				if inputStat, err := os.Stat(taskInput.path); err == nil {
-					taskInput.mtime = inputStat.ModTime().Unix()
-					if casTime <= taskInput.mtime {
-						return false // Input is newer than CAS cache
+				// Check all inputs - if any input is newer than CAS object, task needs to run
+				for _, taskInput := range task.inputs {
+					if inputStat, err := os.Stat(taskInput.path); err == nil {
+						taskInput.mtime = inputStat.ModTime().Unix()
+						if casTime <= taskInput.mtime {
+							return false // Input is newer than CAS cache
+						}
+					}
+				}
+				return true // CAS cache is up to date
+			}
+			return false // CAS object doesn't exist
+		}
+
+		// For CAS tasks with map of SHA256s
+		if shaMap, ok := task.taskDeclaration.OutSha256.(map[string]interface{}); ok {
+			// Find minimum CAS time across all CAS objects
+			var minCasTime int64 = -1
+			for _, shaVal := range shaMap {
+				if shaStr, ok := shaVal.(string); ok {
+					casPath := getCASObjectPath(CACHE_DIRECTORY, ContentDigest(shaStr))
+					if casStat, err := os.Stat(casPath); err == nil {
+						casTime := casStat.ModTime().Unix()
+						if minCasTime == -1 || casTime < minCasTime {
+							minCasTime = casTime
+						}
+					} else {
+						// If any CAS object doesn't exist, task needs to run
+						return false
 					}
 				}
 			}
-			return true // CAS cache is up to date
+
+			if minCasTime == -1 {
+				return false
+			}
+
+			// Check all inputs against minimum CAS time
+			for _, taskInput := range task.inputs {
+				if inputStat, err := os.Stat(taskInput.path); err == nil {
+					taskInput.mtime = inputStat.ModTime().Unix()
+					if minCasTime <= taskInput.mtime {
+						return false
+					}
+				}
+			}
+			return true
 		}
-		return false // CAS object doesn't exist
 	}
 
 	// Task has no output (neither explicit file nor CAS cache)
@@ -839,19 +1026,30 @@ func checkIfInputCausesStaleness(task *RunnableTask, taskInput *RunnableTaskInpu
 
 	// Handle tasks with explicit output files
 	if task.taskDeclaration.Out != nil {
-		// Check if output file exists
-		outputStat, err := os.Stat(*task.taskDeclaration.Out)
-		if err != nil {
-			// Output file doesn't exist, so any input file causes staleness
+		outputPaths := getOutputPaths(task.taskDeclaration.Out)
+		if len(outputPaths) == 0 {
 			return true
 		}
 
-		outputTime := outputStat.ModTime().Unix()
+		// For multiple outputs: check if input is newer than ANY output
+		// Find the minimum (oldest) output mtime
+		var minOutputTime int64 = -1
+		for _, outputPath := range outputPaths {
+			outputStat, err := os.Stat(outputPath)
+			if err != nil {
+				// If any output file doesn't exist, input causes staleness
+				return true
+			}
+			outputTime := outputStat.ModTime().Unix()
+			if minOutputTime == -1 || outputTime < minOutputTime {
+				minOutputTime = outputTime
+			}
+		}
 
-		// Check if this specific input is newer than output
+		// Check if this specific input is newer than the oldest output
 		if inputStat, err := os.Stat(taskInput.path); err == nil {
 			inputTime := inputStat.ModTime().Unix()
-			return outputTime < inputTime
+			return minOutputTime < inputTime
 		}
 	}
 
@@ -956,10 +1154,26 @@ func printVitalsForTask(task *RunnableTask, taskLookup map[string]*RunnableTask)
 			color.CyanString("%s", "<STDOUT>"),
 		)
 	} else {
-		fmt.Fprintf(os.Stdout,
-			"%s",
-			color.HiBlueString("%s", normalizePathForDisplay(*task.taskDeclaration.Out)),
-		)
+		// For multiple outputs, show all of them
+		outputPaths := getOutputPaths(task.taskDeclaration.Out)
+		if len(outputPaths) == 1 {
+			fmt.Fprintf(os.Stdout,
+				"%s",
+				color.HiBlueString("%s", normalizePathForDisplay(outputPaths[0])),
+			)
+		} else if len(outputPaths) > 1 {
+			fmt.Fprintf(os.Stdout, "[")
+			for i, outPath := range outputPaths {
+				if i > 0 {
+					fmt.Fprintf(os.Stdout, ", ")
+				}
+				fmt.Fprintf(os.Stdout,
+					"%s",
+					color.HiBlueString("%s", normalizePathForDisplay(outPath)),
+				)
+			}
+			fmt.Fprintf(os.Stdout, "]")
+		}
 	}
 	if upToDateString != "" {
 		fmt.Fprintf(os.Stdout, " (%s)", upToDateString)
@@ -993,7 +1207,18 @@ func renderCommandWithEnv(task *RunnableTask, env map[string][]string) (string, 
 
 	// Add task-specific builtin variables
 	if task.taskDeclaration.Out != nil {
-		taskBuiltins["out"] = []string{*task.taskDeclaration.Out}
+		outputPaths := getOutputPaths(task.taskDeclaration.Out)
+		taskBuiltins["out"] = outputPaths
+
+		// For map outputs, also add named aliases like "out.first", "out.second"
+		if outMap, ok := task.taskDeclaration.Out.(map[string]interface{}); ok {
+			for key, val := range outMap {
+				if pathStr, ok := val.(string); ok {
+					aliasKey := fmt.Sprintf("out.%s", key)
+					taskBuiltins[aliasKey] = []string{pathStr}
+				}
+			}
+		}
 	}
 
 	// Add input variables
@@ -1013,7 +1238,10 @@ func renderCommandWithEnv(task *RunnableTask, env map[string][]string) (string, 
 						contentDigest = dep.casStdoutDigest
 					} else if dep.taskDeclaration != nil && dep.taskDeclaration.OutSha256 != nil {
 						// For dry-run or when task isn't executed yet, use out.sha256 from YAML
-						contentDigest = ContentDigest(*dep.taskDeclaration.OutSha256)
+						// Handle both string and map SHA256
+						if shaStr, ok := dep.taskDeclaration.OutSha256.(string); ok {
+							contentDigest = ContentDigest(shaStr)
+						}
 					}
 
 					if contentDigest != "" {
@@ -1319,24 +1547,31 @@ func runTask(task *RunnableTask, env map[string][]string, executor Executor, tas
 			trace("running download task")
 
 			if task.taskDeclaration.Out != nil {
-				// File download
-				shouldDownloadFile := false
-				if _, err := os.Stat(*task.taskDeclaration.Out); err == nil {
-					if !isFileBytesMatchingSha256(*task.taskDeclaration.Out, *task.taskDeclaration.OutSha256) {
-						fmt.Fprintf(os.Stderr, "warning: SHA256 mismatch for:\n%s; overwriting file", *task.taskDeclaration.Out)
+				// File download - handle single output only for now
+				primaryOutput := getPrimaryOutputPath(task.taskDeclaration.Out)
+				if primaryOutput != "" {
+					shouldDownloadFile := false
+					if _, err := os.Stat(primaryOutput); err == nil {
+						// Check SHA256 if specified
+						sha256Map := getOutputSha256Map(task.taskDeclaration.Out, task.taskDeclaration.OutSha256)
+						if expectedSha, ok := sha256Map[primaryOutput]; ok {
+							if !isFileBytesMatchingSha256(primaryOutput, expectedSha) {
+								fmt.Fprintf(os.Stderr, "warning: SHA256 mismatch for:\n%s; overwriting file", primaryOutput)
+								shouldDownloadFile = true
+							}
+						}
+					} else {
 						shouldDownloadFile = true
 					}
-				} else {
-					shouldDownloadFile = true
-				}
 
-				if shouldDownloadFile {
-					err := executor.DownloadFile(task.inputs[0].path, *task.taskDeclaration.Out)
-					if err != nil {
-						fmt.Printf("Error downloading file: %v\n", err)
-						return
+					if shouldDownloadFile {
+						err := executor.DownloadFile(task.inputs[0].path, primaryOutput)
+						if err != nil {
+							fmt.Printf("Error downloading file: %v\n", err)
+							return
+						}
+						shouldCheckOutput = true
 					}
-					shouldCheckOutput = true
 				}
 			} else {
 				// Stdout download
@@ -1365,16 +1600,28 @@ func runTask(task *RunnableTask, env map[string][]string, executor Executor, tas
 	}
 
 	if executor.ShouldUpdateSha256() && task.taskDeclaration.Out != nil {
-		outputFileBytes, err := os.ReadFile(*task.taskDeclaration.Out)
-		bailOnError(err)
-		outputSha256 := getBytesSha256(outputFileBytes)
-		task.taskDeclaration.OutSha256 = &outputSha256
-		trace(fmt.Sprintf("Updated OUT SHA256: %s", outputSha256))
+		// TODO: Add full support for updating SHA256 of multiple outputs
+		// For now, handle single output only
+		primaryOutput := getPrimaryOutputPath(task.taskDeclaration.Out)
+		if primaryOutput != "" {
+			outputFileBytes, err := os.ReadFile(primaryOutput)
+			bailOnError(err)
+			outputSha256 := getBytesSha256(outputFileBytes)
+			// For single string output, update as string
+			if _, ok := task.taskDeclaration.Out.(string); ok {
+				task.taskDeclaration.OutSha256 = outputSha256
+			}
+			trace(fmt.Sprintf("Updated OUT SHA256: %s", outputSha256))
+		}
 	} else if shouldCheckOutput && task.taskDeclaration.Out != nil && task.taskDeclaration.OutSha256 != nil {
-		if isFileBytesMatchingSha256(*task.taskDeclaration.Out, *task.taskDeclaration.OutSha256) {
-			trace("OUT SHA256 matches!")
-		} else {
-			trace("OUT SHA256 mismatch!")
+		// Check SHA256 for all outputs
+		sha256Map := getOutputSha256Map(task.taskDeclaration.Out, task.taskDeclaration.OutSha256)
+		for outputPath, expectedSha := range sha256Map {
+			if isFileBytesMatchingSha256(outputPath, expectedSha) {
+				trace(fmt.Sprintf("OUT SHA256 matches for %s!", outputPath))
+			} else {
+				trace(fmt.Sprintf("OUT SHA256 mismatch for %s!", outputPath))
+			}
 		}
 	}
 
@@ -1385,15 +1632,18 @@ func runTask(task *RunnableTask, env map[string][]string, executor Executor, tas
 
 		if task.taskDeclaration.OutSha256 != nil {
 			// Traditional case: task has explicit out: field
-			needsUpdate = true
-			sha256ToUpdate = *task.taskDeclaration.OutSha256
+			// For single output, extract the SHA256 string
+			if shaStr, ok := task.taskDeclaration.OutSha256.(string); ok {
+				needsUpdate = true
+				sha256ToUpdate = shaStr
+			}
 		} else if task.taskDeclaration.Out == nil {
 			// New CAS case: task has no out: field, check if stdout was captured
 			if contentDigest, ok := getTaskStdoutDigestFromCAS(task, executor); ok {
 				needsUpdate = true
 				sha256ToUpdate = string(contentDigest)
 				// Set the OutSha256 in the task declaration so updateOutSha256ForTarget can find it
-				task.taskDeclaration.OutSha256 = &sha256ToUpdate
+				task.taskDeclaration.OutSha256 = sha256ToUpdate
 			}
 		}
 
@@ -1475,9 +1725,20 @@ func populateTaskModTimes(task *RunnableTask) {
 	}
 
 	if task.taskDeclaration.Out != nil {
-		stat, err := os.Stat(*task.taskDeclaration.Out)
-		if err == nil {
-			task.outTime = stat.ModTime().Unix()
+		outputPaths := getOutputPaths(task.taskDeclaration.Out)
+		// For multiple outputs, use the minimum (oldest) mtime
+		var minOutputTime int64 = -1
+		for _, outputPath := range outputPaths {
+			stat, err := os.Stat(outputPath)
+			if err == nil {
+				outputTime := stat.ModTime().Unix()
+				if minOutputTime == -1 || outputTime < minOutputTime {
+					minOutputTime = outputTime
+				}
+			}
+		}
+		if minOutputTime != -1 {
+			task.outTime = minOutputTime
 		}
 	}
 }
@@ -1502,17 +1763,11 @@ func createTaskFromRunnableKeyVals(
 
 	if isPath(task.targetName) {
 		fileAbsPath := getPathRelativeToCwd(task.targetName)
-		task.taskDeclaration.Out = &fileAbsPath
+		task.taskDeclaration.Out = fileAbsPath
 	} else {
 		if outputPathValue, ok := runnableData["out"]; ok {
-			pathString := outputPathValue.(string)
-			if isPath(pathString) {
-				task.taskDeclaration.Out = &pathString
-			} else {
-				fileAbsPath := getPathRelativeToCwd(
-					*substituteWithContext(pathString, convertArrayMapToStringMap(executionEnv)))
-				task.taskDeclaration.Out = &fileAbsPath
-			}
+			// Use shared helper to process paths in the field (string/array/map)
+			task.taskDeclaration.Out = processFieldForPaths(outputPathValue, convertArrayMapToStringMap(executionEnv))
 		}
 	}
 
@@ -1544,8 +1799,8 @@ func createTaskFromRunnableKeyVals(
 			var inputStrings []string
 			for alias, inItem := range v {
 				originalInput := inItem.(string)
-				inString := getPathRelativeToCwd(
-					*substituteWithContext(originalInput, convertArrayMapToStringMap(executionEnv)))
+				// Use shared helper for path processing
+				inString := processPathString(originalInput, convertArrayMapToStringMap(executionEnv))
 				inputStrings = append(inputStrings, fmt.Sprintf("\"%s\"", inString))
 				task.inputs = append(task.inputs, &RunnableTaskInput{
 					path:          inString,
@@ -1605,8 +1860,8 @@ func createTaskFromRunnableKeyVals(
 	}
 
 	if outSha256Value, ok := runnableData["out.sha256"]; ok {
-		outSha256String := outSha256Value.(string)
-		task.taskDeclaration.OutSha256 = &outSha256String
+		// Handle different SHA256 types: string or map
+		task.taskDeclaration.OutSha256 = outSha256Value
 	}
 
 	if runnableValue, ok := runnableData["run"]; ok {
@@ -1762,7 +2017,11 @@ func parseFlowDefinitionSource(flowDefinitionSource string) *ParsedFlowDefinitio
 			task := createTaskFromRunnableKeyVals(targetIdentifier, substitutedTargetName, runnableData, executionEnv)
 			taskLookup[substitutedTargetName] = task
 			if task.taskDeclaration.Out != nil {
-				taskLookup[*task.taskDeclaration.Out] = task
+				// Index task by all output paths
+				outputPaths := getOutputPaths(task.taskDeclaration.Out)
+				for _, outPath := range outputPaths {
+					taskLookup[outPath] = task
+				}
 			}
 		}
 	}
@@ -1889,13 +2148,23 @@ func addImplicitDependencies(taskLookup map[string]*RunnableTask, taskDependenci
 
 			if found && producingTask != nil {
 				if producingTask.taskDeclaration != nil && producingTask.taskDeclaration.Out != nil {
-					outPathAbs, err := filepath.Abs(*producingTask.taskDeclaration.Out)
-					if err != nil {
-						outPathAbs = *producingTask.taskDeclaration.Out
+					// Check if input matches any of the task's outputs
+					outputPaths := getOutputPaths(producingTask.taskDeclaration.Out)
+					matchFound := false
+					for _, outPath := range outputPaths {
+						outPathAbs, err := filepath.Abs(outPath)
+						if err != nil {
+							outPathAbs = outPath
+						}
+
+						// Match if paths are equal (after normalization)
+						if outPath == input.path || outPathAbs == inputPathAbs {
+							matchFound = true
+							break
+						}
 					}
 
-					// Match if paths are equal (after normalization)
-					if *producingTask.taskDeclaration.Out == input.path || outPathAbs == inputPathAbs {
+					if matchFound {
 						// Find the actual task name that produces this output (not the output file alias)
 						var producingTaskName string
 						for name, t := range taskLookup {
@@ -1993,15 +2262,18 @@ func runFlowDefinitionProcessor(flowDefinitionFilePath string, executor Executor
 
 				if task.taskDeclaration.OutSha256 != nil {
 					// Traditional case: task has explicit out: field
-					needsUpdate = true
-					sha256ToUpdate = *task.taskDeclaration.OutSha256
+					// For single output, extract the SHA256 string
+					if shaStr, ok := task.taskDeclaration.OutSha256.(string); ok {
+						needsUpdate = true
+						sha256ToUpdate = shaStr
+					}
 				} else if task.taskDeclaration.Out == nil {
 					// New CAS case: task has no out: field, check if stdout was captured
 					if contentDigest, ok := getTaskStdoutDigestFromCAS(task, executor); ok {
 						needsUpdate = true
 						sha256ToUpdate = string(contentDigest)
 						// Set the OutSha256 in the task declaration so updateOutSha256ForTarget can find it
-						task.taskDeclaration.OutSha256 = &sha256ToUpdate
+						task.taskDeclaration.OutSha256 = sha256ToUpdate
 					}
 				}
 
@@ -2292,15 +2564,18 @@ func runTaskSingle(task *RunnableTask, env map[string][]string, executor Executo
 
 		if task.taskDeclaration.OutSha256 != nil {
 			// Traditional case: task has explicit out: field
-			needsUpdate = true
-			sha256ToUpdate = *task.taskDeclaration.OutSha256
+			// For single output, extract the SHA256 string
+			if shaStr, ok := task.taskDeclaration.OutSha256.(string); ok {
+				needsUpdate = true
+				sha256ToUpdate = shaStr
+			}
 		} else if task.taskDeclaration.Out == nil {
 			// New CAS case: task has no out: field, check if stdout was captured
 			if contentDigest, ok := getTaskStdoutDigestFromCAS(task, executor); ok {
 				needsUpdate = true
 				sha256ToUpdate = string(contentDigest)
 				// Set the OutSha256 in the task declaration so updateOutSha256ForTarget can find it
-				task.taskDeclaration.OutSha256 = &sha256ToUpdate
+				task.taskDeclaration.OutSha256 = sha256ToUpdate
 			}
 		}
 

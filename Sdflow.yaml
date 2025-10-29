@@ -106,6 +106,18 @@ example-minio-loader-to-disk:
   in: s3://testbucket/version.go
   out: /tmp/version-minio.go
 
+example-multiple-outputs-list:
+  out:
+    - /tmp/deleteme.1
+    - /tmp/deleteme.2
+  run: echo ${out[0]} ${out[1]} && touch $out
+
+example-multiple-outputs-map:
+  out:
+    foo: /tmp/deleteme.1
+    bar: /tmp/deleteme.2
+  run: echo ${out.foo} ${out.bar} && touch $out
+
 update-readme:
   in: build/bin/sdflow
   out: README.md
