@@ -91,19 +91,19 @@ func TestSubstituteWithContext(t *testing.T) {
 
 func TestEscapeMechanism(t *testing.T) {
 	ctx := map[string]string{"VAR": "value"}
-	
+
 	// Test that $$ becomes $
 	out := substituteWithContext("echo $$HOME", ctx)
 	if *out != "echo $HOME" {
 		t.Fatalf("want %q, got %q", "echo $HOME", *out)
 	}
-	
+
 	// Test that ${VAR} is substituted but $$NF becomes $NF
 	out2 := substituteWithContext("awk '{print $$NF}' ${VAR}", ctx)
 	if *out2 != "awk '{print $NF}' value" {
 		t.Fatalf("want %q, got %q", "awk '{print $NF}' value", *out2)
 	}
-	
+
 	// Test multiple escapes
 	out3 := substituteWithContext("$$1 $$2 ${VAR} $$3", ctx)
 	if *out3 != "$1 $2 value $3" {
@@ -122,8 +122,8 @@ func TestExpandSdflowBuiltins(t *testing.T) {
 	}{
 		// Basic builtin substitution tests
 		{
-			name:        "substitute $in with values",
-			template:    "echo $in",
+			name:     "substitute $in with values",
+			template: "echo $in",
 			taskEnv: map[string][]string{
 				"in": {"file1.txt", "file2.txt"},
 			},
@@ -131,8 +131,8 @@ func TestExpandSdflowBuiltins(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name:        "substitute ${in} with values",
-			template:    "echo ${in}",
+			name:     "substitute ${in} with values",
+			template: "echo ${in}",
 			taskEnv: map[string][]string{
 				"in": {"file1.txt", "file2.txt"},
 			},
@@ -140,8 +140,8 @@ func TestExpandSdflowBuiltins(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name:        "substitute $out with value",
-			template:    "echo $out",
+			name:     "substitute $out with value",
+			template: "echo $out",
 			taskEnv: map[string][]string{
 				"out": {"output.txt"},
 			},
@@ -149,8 +149,8 @@ func TestExpandSdflowBuiltins(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name:        "substitute ${out} with value",
-			template:    "echo ${out}",
+			name:     "substitute ${out} with value",
+			template: "echo ${out}",
 			taskEnv: map[string][]string{
 				"out": {"output.txt"},
 			},
@@ -158,8 +158,8 @@ func TestExpandSdflowBuiltins(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name:        "substitute ${in[0]} indexed access",
-			template:    "cat ${in[0]}",
+			name:     "substitute ${in[0]} indexed access",
+			template: "cat ${in[0]}",
 			taskEnv: map[string][]string{
 				"in": {"first.txt", "second.txt"},
 			},
@@ -167,8 +167,8 @@ func TestExpandSdflowBuiltins(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name:        "substitute ${in[1]} indexed access",
-			template:    "cat ${in[1]}",
+			name:     "substitute ${in[1]} indexed access",
+			template: "cat ${in[1]}",
 			taskEnv: map[string][]string{
 				"in": {"first.txt", "second.txt"},
 			},
@@ -176,11 +176,11 @@ func TestExpandSdflowBuiltins(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name:        "substitute ${in.alias} aliased input",
-			template:    "process ${in.source}",
+			name:     "substitute ${in.alias} aliased input",
+			template: "process ${in.source}",
 			taskEnv: map[string][]string{
-				"in":         {"first.txt", "second.txt"},
-				"in.source":  {"source.txt"},
+				"in":        {"first.txt", "second.txt"},
+				"in.source": {"source.txt"},
 			},
 			expected:    "process source.txt",
 			expectError: false,
@@ -188,8 +188,8 @@ func TestExpandSdflowBuiltins(t *testing.T) {
 
 		// Test partial/missing builtin scenarios
 		{
-			name:        "missing 'in' leaves $in untouched",
-			template:    "echo $in and $out",
+			name:     "missing 'in' leaves $in untouched",
+			template: "echo $in and $out",
 			taskEnv: map[string][]string{
 				"out": {"output.txt"},
 			},
@@ -197,8 +197,8 @@ func TestExpandSdflowBuiltins(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name:        "missing 'out' leaves $out untouched",
-			template:    "echo $in > $out",
+			name:     "missing 'out' leaves $out untouched",
+			template: "echo $in > $out",
 			taskEnv: map[string][]string{
 				"in": {"input.txt"},
 			},
@@ -206,8 +206,8 @@ func TestExpandSdflowBuiltins(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name:        "index out of range throws error",
-			template:    "echo ${in[5]}",
+			name:     "index out of range throws error",
+			template: "echo ${in[5]}",
 			taskEnv: map[string][]string{
 				"in": {"file1.txt", "file2.txt"},
 			},
@@ -215,18 +215,18 @@ func TestExpandSdflowBuiltins(t *testing.T) {
 			expectError: true,
 		},
 		{
-			name:        "undefined alias throws error",
-			template:    "echo ${in.missing}",
+			name:     "undefined alias throws error",
+			template: "echo ${in.missing}",
 			taskEnv: map[string][]string{
-				"in": {"file1.txt"},
+				"in":       {"file1.txt"},
 				"in.other": {"other.txt"},
 			},
 			expected:    "",
 			expectError: true,
 		},
 		{
-			name:        "dot notation ${in.0} works",
-			template:    "echo ${in.0}",
+			name:     "dot notation ${in.0} works",
+			template: "echo ${in.0}",
 			taskEnv: map[string][]string{
 				"in": {"first.txt", "second.txt"},
 			},
@@ -234,8 +234,8 @@ func TestExpandSdflowBuiltins(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name:        "dot notation ${in.1} works",
-			template:    "echo ${in.1}",
+			name:     "dot notation ${in.1} works",
+			template: "echo ${in.1}",
 			taskEnv: map[string][]string{
 				"in": {"first.txt", "second.txt"},
 			},
@@ -245,8 +245,8 @@ func TestExpandSdflowBuiltins(t *testing.T) {
 
 		// Test that non-builtins are left alone
 		{
-			name:        "shell variables left untouched",
-			template:    "echo $HOME and $USER and ${PWD}",
+			name:     "shell variables left untouched",
+			template: "echo $HOME and $USER and ${PWD}",
 			taskEnv: map[string][]string{
 				"in": {"input.txt"},
 			},
@@ -254,8 +254,8 @@ func TestExpandSdflowBuiltins(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name:        "awk variables left untouched",
-			template:    "awk '{print $1, $NF}' $in",
+			name:     "awk variables left untouched",
+			template: "awk '{print $1, $NF}' $in",
 			taskEnv: map[string][]string{
 				"in": {"data.txt"},
 			},
@@ -263,8 +263,8 @@ func TestExpandSdflowBuiltins(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name:        "mixed builtins and shell variables",
-			template:    "echo $USER processing $in into $out at $(date)",
+			name:     "mixed builtins and shell variables",
+			template: "echo $USER processing $in into $out at $(date)",
 			taskEnv: map[string][]string{
 				"in":  {"input.txt"},
 				"out": {"output.txt"},
@@ -275,8 +275,8 @@ func TestExpandSdflowBuiltins(t *testing.T) {
 
 		// Test escaping for builtins only
 		{
-			name:        "escaped builtin $in becomes literal",
-			template:    "echo our inputs are stored in $$in which consists of $in",
+			name:     "escaped builtin $in becomes literal",
+			template: "echo our inputs are stored in $$in which consists of $in",
 			taskEnv: map[string][]string{
 				"in": {"file1.txt", "file2.txt"},
 			},
@@ -284,8 +284,8 @@ func TestExpandSdflowBuiltins(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name:        "escaped builtin ${out} becomes literal",
-			template:    "echo result goes to $${out} which is $out",
+			name:     "escaped builtin ${out} becomes literal",
+			template: "echo result goes to $${out} which is $out",
 			taskEnv: map[string][]string{
 				"out": {"result.txt"},
 			},
@@ -293,8 +293,8 @@ func TestExpandSdflowBuiltins(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name:        "shell variables don't need escaping",
-			template:    "awk '{print $1, $NF}' with ${in[0]} no escaping needed",
+			name:     "shell variables don't need escaping",
+			template: "awk '{print $1, $NF}' with ${in[0]} no escaping needed",
 			taskEnv: map[string][]string{
 				"in": {"data.txt"},
 			},
@@ -336,11 +336,11 @@ func TestRenderCommandWithEnv(t *testing.T) {
 		{
 			name: "YAML globals become environment variables",
 			taskEnv: map[string][]string{
-				"in":       {"input.txt"},
-				"out":      {"output.txt"},
-				"VERSION":  {"1.2.3"},
-				"DEBUG":    {"true"},
-				"TARGETS":  {"linux", "macos", "windows"},
+				"in":      {"input.txt"},
+				"out":     {"output.txt"},
+				"VERSION": {"1.2.3"},
+				"DEBUG":   {"true"},
+				"TARGETS": {"linux", "macos", "windows"},
 			},
 			expectInEnv: []string{"VERSION=1.2.3", "DEBUG=true", "TARGETS=linux macos windows"},
 		},
@@ -419,9 +419,9 @@ func TestEnvironmentVariableOverrides(t *testing.T) {
 	testCases := []struct {
 		name        string
 		yamlGlobals map[string][]string
-		setupEnv    map[string]string  // Environment variables to set for test
-		commands    []string           // Commands to test
-		expectEnv   map[string]string  // Expected values in environment
+		setupEnv    map[string]string // Environment variables to set for test
+		commands    []string          // Commands to test
+		expectEnv   map[string]string // Expected values in environment
 	}{
 		{
 			name: "YAML variable overrides system environment",
@@ -1793,32 +1793,32 @@ func TestJsonnetJsonParsing(t *testing.T) {
 				"run": "echo 'Hello JSON'"
 			}
 		}`
-		
+
 		pfd := parseFlowDefinitionSource(jsonContent)
-		
+
 		if pfd == nil {
 			t.Fatal("Failed to parse JSON content")
 		}
-		
+
 		if len(pfd.taskLookup) == 0 {
 			t.Fatal("No tasks found in parsed JSON")
 		}
-		
+
 		testTask, exists := pfd.taskLookup["test-task"]
 		if !exists {
 			t.Fatal("test-task not found in parsed JSON")
 		}
-		
+
 		if testTask.taskDeclaration.Run == nil {
 			t.Fatal("Run command not found in test-task")
 		}
-		
+
 		expectedRun := "echo 'Hello JSON'"
 		if *testTask.taskDeclaration.Run != expectedRun {
 			t.Fatalf("Expected run command '%s', got '%s'", expectedRun, *testTask.taskDeclaration.Run)
 		}
 	})
-	
+
 	// Test file type detection
 	t.Run("File type detection", func(t *testing.T) {
 		tests := []struct {
@@ -1831,7 +1831,7 @@ func TestJsonnetJsonParsing(t *testing.T) {
 			{"test.jsonnet", "jsonnet"},
 			{"test", "yaml"}, // fallback
 		}
-		
+
 		for _, tt := range tests {
 			result := detectFileType(tt.filename)
 			if result != tt.expected {
@@ -1861,7 +1861,7 @@ func TestParallelExecutorConstructors(t *testing.T) {
 	t.Run("Default single worker behavior", func(t *testing.T) {
 		realExec := NewRealExecutor(false, false)
 		dryExec := NewDryRunExecutor(false, false)
-		
+
 		// These should default to 1 worker
 		if realExec.WorkerCount() != 1 {
 			t.Errorf("Expected default worker count 1 for RealExecutor, got %d", realExec.WorkerCount())
@@ -1891,7 +1891,7 @@ func TestDependencyLevelCalculation(t *testing.T) {
 	}
 
 	levels := calculateDependencyLevels(taskDependencies)
-	
+
 	for task, expectedLevel := range expectedLevels {
 		if actualLevel, exists := levels[task]; !exists {
 			t.Errorf("Task %s not found in levels map", task)
@@ -1965,23 +1965,23 @@ test-parallel-simple:
 
 	t.Run("Basic parallel execution functionality", func(t *testing.T) {
 		executor := NewRealExecutorWithWorkers(4, false, false)
-		
+
 		parsedFlow := parseFlowDefinitionFile(flowPath)
 		task := parsedFlow.taskLookup["test-parallel-simple"]
-		
+
 		if task == nil {
 			t.Fatal("Task not found in parsed flow")
 		}
-		
+
 		start := time.Now()
 		runTaskParallel(task, parsedFlow.executionEnv, executor, parsedFlow.taskLookup)
 		duration := time.Since(start)
-		
+
 		// Should complete successfully
 		if task.executionState != TaskCompleted {
 			t.Errorf("Expected task to be completed, got state: %v", task.executionState)
 		}
-		
+
 		// Should take at least the sleep time
 		if duration < 40*time.Millisecond {
 			t.Errorf("Execution too fast, expected >40ms, got %v", duration)
@@ -1991,14 +1991,14 @@ test-parallel-simple:
 	t.Run("Sequential vs Parallel comparison - stub test", func(t *testing.T) {
 		// This is a placeholder for a more comprehensive parallel vs sequential test
 		// For now, just verify the worker count functionality works
-		
+
 		seqExecutor := NewRealExecutorWithWorkers(1, false, false)
 		parExecutor := NewRealExecutorWithWorkers(4, false, false)
-		
+
 		if seqExecutor.WorkerCount() != 1 {
 			t.Errorf("Sequential executor should have 1 worker, got %d", seqExecutor.WorkerCount())
 		}
-		
+
 		if parExecutor.WorkerCount() != 4 {
 			t.Errorf("Parallel executor should have 4 workers, got %d", parExecutor.WorkerCount())
 		}
@@ -2034,23 +2034,23 @@ consumer:
 	}
 
 	parsedFlow := parseFlowDefinitionFile(flowPath)
-	
+
 	// Check if producer tasks are marked as referenced
 	producer1 := parsedFlow.taskLookup["producer-1"]
 	producer2 := parsedFlow.taskLookup["producer-2"]
 	consumer := parsedFlow.taskLookup["consumer"]
-	
+
 	if producer1 == nil || producer2 == nil || consumer == nil {
 		t.Fatal("Tasks not found in parsed flow")
 	}
-	
+
 	t.Logf("producer-1.isReferenced: %v", producer1.isReferenced)
 	t.Logf("producer-2.isReferenced: %v", producer2.isReferenced)
 	t.Logf("consumer inputs: %d", len(consumer.inputs))
 	for i, input := range consumer.inputs {
 		t.Logf("consumer input[%d]: path=%s, taskReference=%s", i, input.path, input.taskReference)
 	}
-	
+
 	// Verify that producer tasks are marked as referenced
 	if !producer1.isReferenced {
 		t.Error("producer-1 should be marked as referenced")
@@ -2071,23 +2071,23 @@ func TestParallelFinalTaskReferences(t *testing.T) {
 	if parallelFinal == nil {
 		t.Fatal("parallel-final task not found")
 	}
-	
+
 	// Check some of the parallel tasks to see if they're marked as referenced
 	testTasks := []string{"parallel-task-03", "parallel-task-04", "parallel-task-05"}
-	
+
 	for _, taskName := range testTasks {
 		task := parsedFlow.taskLookup[taskName]
 		if task == nil {
 			t.Errorf("Task %s not found", taskName)
 			continue
 		}
-		
+
 		t.Logf("Task %s: isReferenced=%v", taskName, task.isReferenced)
 		if !task.isReferenced {
 			t.Errorf("Task %s should be marked as referenced by parallel-final", taskName)
 		}
 	}
-	
+
 	// Check inputs of parallel-final
 	t.Logf("parallel-final has %d inputs", len(parallelFinal.inputs))
 	for i, input := range parallelFinal.inputs {
@@ -2120,7 +2120,7 @@ parallel-sha256-test:
 	oldWd, _ := os.Getwd()
 	defer os.Chdir(oldWd)
 	os.Chdir(tempDir)
-	
+
 	// Set up proper environment for the test
 	oldFlowFile := FLOW_DEFINITION_FILE
 	defer func() { FLOW_DEFINITION_FILE = oldFlowFile }()
@@ -2128,22 +2128,22 @@ parallel-sha256-test:
 
 	t.Run("Parallel execution with SHA256 caching", func(t *testing.T) {
 		executor := NewRealExecutorWithWorkers(4, true, false) // Enable updateSha256
-		
+
 		parsedFlow := parseFlowDefinitionFile(flowPath)
 		task := parsedFlow.taskLookup["parallel-sha256-test"]
-		
+
 		if task == nil {
 			t.Fatal("Task not found in parsed flow")
 		}
-		
+
 		// Execute with parallel execution
 		runTaskParallel(task, parsedFlow.executionEnv, executor, parsedFlow.taskLookup)
-		
+
 		// Verify task completed successfully
 		if task.executionState != TaskCompleted {
 			t.Errorf("Expected task to be completed, got state: %v", task.executionState)
 		}
-		
+
 		// Verify SHA256 was set in task declaration
 		if task.taskDeclaration.OutSha256 == nil {
 			t.Error("Expected OutSha256 to be set after parallel execution with updateSha256=true")
@@ -2157,13 +2157,13 @@ parallel-sha256-test:
 				t.Errorf("Expected OutSha256 to be string, got %T", task.taskDeclaration.OutSha256)
 			}
 		}
-		
+
 		// Read the updated YAML file and verify SHA256 was written
 		updatedYaml, err := os.ReadFile(flowPath)
 		if err != nil {
 			t.Fatalf("Failed to read updated YAML: %v", err)
 		}
-		
+
 		yamlContent := string(updatedYaml)
 		if !strings.Contains(yamlContent, "out.sha256:") {
 			t.Error("Expected 'out.sha256:' to be present in updated YAML file")
@@ -2174,7 +2174,7 @@ parallel-sha256-test:
 func TestCommandLineFlagParsing(t *testing.T) {
 	// This test will verify that -j flag is properly parsed
 	// We'll need to test this through cobra command execution
-	
+
 	t.Run("Valid job count", func(t *testing.T) {
 		// Test parsing -j 4
 		jobCount, err := parseJobsFlag([]string{"-j", "4"})
@@ -2185,21 +2185,21 @@ func TestCommandLineFlagParsing(t *testing.T) {
 			t.Errorf("Expected job count 4, got %d", jobCount)
 		}
 	})
-	
+
 	t.Run("Invalid job count", func(t *testing.T) {
 		// Test parsing -j 0 (should be invalid)
 		_, err := parseJobsFlag([]string{"-j", "0"})
 		if err == nil {
 			t.Error("Expected error for invalid job count 0")
 		}
-		
+
 		// Test parsing -j -1 (should be invalid)
 		_, err = parseJobsFlag([]string{"-j", "-1"})
 		if err == nil {
 			t.Error("Expected error for negative job count")
 		}
 	})
-	
+
 	t.Run("Default job count", func(t *testing.T) {
 		// Test default behavior (no -j flag)
 		jobCount, err := parseJobsFlag([]string{})
@@ -2741,7 +2741,7 @@ func TestTaskReferenceExecution(t *testing.T) {
 	}
 
 	// Create executor with updateSha256 disabled (task references should work without --updatehash)
-	executor := NewRealExecutor(false, false)
+	executor := NewRealExecutor(false, true)
 	executor.casStore = NewFilesystemCASStore(tempDir)
 	executor.taskMetadataStore = NewFilesystemTaskMetadataStore(tempDir)
 
@@ -2810,7 +2810,7 @@ version.go:
 	}
 
 	// Execute the task
-	executor := NewRealExecutor(false, false)
+	executor := NewRealExecutor(false, true)
 
 	// This should work - the task runs once due to execution state tracking
 	runTask(task, pfd.executionEnv, executor, pfd.taskLookup)
@@ -2860,7 +2860,7 @@ update-version:
 		t.Fatal("update-version task not found")
 	}
 
-	executor := NewRealExecutor(false, false)
+	executor := NewRealExecutor(false, true)
 	runTask(task, pfd.executionEnv, executor, pfd.taskLookup)
 
 	if task.executionCount != 1 {
@@ -2930,7 +2930,7 @@ task-b:
 	t.Logf("task-a out: %v", taskA.taskDeclaration.Out)
 	t.Logf("task-b out: %v", taskB.taskDeclaration.Out)
 
-	executor := NewRealExecutor(false, false)
+	executor := NewRealExecutor(false, true)
 
 	// Run task-a - it should handle the cycle via execution state
 	runTask(taskA, pfd.executionEnv, executor, pfd.taskLookup)
@@ -2996,7 +2996,7 @@ task-c:
 		t.Fatal("Tasks not found")
 	}
 
-	executor := NewRealExecutor(false, false)
+	executor := NewRealExecutor(false, true)
 	runTask(taskA, pfd.executionEnv, executor, pfd.taskLookup)
 
 	// All three tasks should execute exactly once
@@ -3144,12 +3144,12 @@ single-output:
 	if !ok {
 		t.Fatal("task not found")
 	}
-	
+
 	// Out should be a string
 	if task.taskDeclaration.Out == nil {
 		t.Fatal("Out is nil")
 	}
-	
+
 	outStr, ok := task.taskDeclaration.Out.(string)
 	if !ok {
 		t.Fatalf("Out should be string, got %T", task.taskDeclaration.Out)
@@ -3172,12 +3172,12 @@ single-output-sha:
 	if !ok {
 		t.Fatal("task not found")
 	}
-	
+
 	// OutSha256 should be a string
 	if task.taskDeclaration.OutSha256 == nil {
 		t.Fatal("OutSha256 is nil")
 	}
-	
+
 	shaStr, ok := task.taskDeclaration.OutSha256.(string)
 	if !ok {
 		t.Fatalf("OutSha256 should be string, got %T", task.taskDeclaration.OutSha256)
@@ -3203,21 +3203,21 @@ multi-output-list:
 	if !ok {
 		t.Fatal("task not found")
 	}
-	
+
 	// Out should be a slice
 	if task.taskDeclaration.Out == nil {
 		t.Fatal("Out is nil")
 	}
-	
+
 	outSlice, ok := task.taskDeclaration.Out.([]interface{})
 	if !ok {
 		t.Fatalf("Out should be []interface{}, got %T", task.taskDeclaration.Out)
 	}
-	
+
 	if len(outSlice) != 3 {
 		t.Fatalf("expected 3 outputs, got %d", len(outSlice))
 	}
-	
+
 	expectedOutputs := []string{"output1.txt", "output2.txt", "output3.txt"}
 	for i, expected := range expectedOutputs {
 		actual, ok := outSlice[i].(string)
@@ -3245,27 +3245,27 @@ multi-output-map:
 	if !ok {
 		t.Fatal("task not found")
 	}
-	
+
 	// Out should be a map
 	if task.taskDeclaration.Out == nil {
 		t.Fatal("Out is nil")
 	}
-	
+
 	outMap, ok := task.taskDeclaration.Out.(map[string]interface{})
 	if !ok {
 		t.Fatalf("Out should be map[string]interface{}, got %T", task.taskDeclaration.Out)
 	}
-	
+
 	expectedOutputs := map[string]string{
 		"first":  "output1.txt",
 		"second": "output2.txt",
 		"third":  "output3.txt",
 	}
-	
+
 	if len(outMap) != len(expectedOutputs) {
 		t.Fatalf("expected %d outputs, got %d", len(expectedOutputs), len(outMap))
 	}
-	
+
 	for key, expectedVal := range expectedOutputs {
 		actualVal, ok := outMap[key]
 		if !ok {
@@ -3298,22 +3298,22 @@ multi-output-sha:
 	if !ok {
 		t.Fatal("task not found")
 	}
-	
+
 	// OutSha256 should be a map
 	if task.taskDeclaration.OutSha256 == nil {
 		t.Fatal("OutSha256 is nil")
 	}
-	
+
 	shaMap, ok := task.taskDeclaration.OutSha256.(map[string]interface{})
 	if !ok {
 		t.Fatalf("OutSha256 should be map[string]interface{}, got %T", task.taskDeclaration.OutSha256)
 	}
-	
+
 	expectedShas := map[string]string{
 		"alpha": "a948904f2f0f479b8f8197694b30184b0d2ed1c1cd2a1ec0fb85d299a192a447",
 		"beta":  "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
 	}
-	
+
 	for key, expectedSha := range expectedShas {
 		actualSha, ok := shaMap[key]
 		if !ok {
