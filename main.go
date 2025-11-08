@@ -667,6 +667,10 @@ var zshAutoCompleteScript embed.FS
 
 const zshAutoCompleteScriptPath = "resources/zsh_autocomplete.sh"
 
+// maxRelativePathDepth defines the maximum number of "../" segments allowed
+// before a path is converted to absolute or home-relative form for display
+const maxRelativePathDepth = 3
+
 type TaskExecutionState int
 
 const (
@@ -744,6 +748,11 @@ func extractPathsFromField(field interface{}) []string {
 // This is shared logic for both inputs and outputs
 func processPathString(pathStr string, env map[string]string) string {
 	if isPath(pathStr) {
+		// If it starts with tilde, expand it
+		if strings.HasPrefix(pathStr, "~") {
+			return getPathRelativeToCwd(pathStr)
+		}
+		// For other paths (absolute, ./, ../), return as-is
 		return pathStr
 	}
 	return getPathRelativeToCwd(*substituteWithContext(pathStr, env))
@@ -1671,9 +1680,13 @@ func getPathRelativeToCwd(path string) string {
 	if !isPath(path) {
 		return path
 	}
+
+	// Expand tilde before processing
+	expandedPath := expandTilde(path)
+
 	cwd, err := os.Getwd()
 	bailOnError(err)
-	absPath, err := filepath.Abs(path)
+	absPath, err := filepath.Abs(expandedPath)
 	bailOnError(err)
 	relPath, err := filepath.Rel(cwd, absPath)
 	bailOnError(err)
@@ -1684,19 +1697,40 @@ func getPathRelativeToCwd(path string) string {
 }
 
 // normalizePathForDisplay ensures consistent "./" prefix for relative local paths
-// and converts paths that were likely absolute back to absolute form for display
+// and converts paths that were likely absolute back to absolute form for display.
+// For deeply nested relative paths (>= maxRelativePathDepth "../" segments),
+// it converts them to absolute paths, or if under $HOME, to $HOME-relative form.
 func normalizePathForDisplay(path string) string {
-	// Don't modify URLs or absolute paths
-	if isRemotePath(path) || strings.HasPrefix(path, "/") {
+	// Don't modify URLs
+	if isRemotePath(path) {
+		return path
+	}
+
+	// Keep absolute paths as-is
+	if strings.HasPrefix(path, "/") {
 		return path
 	}
 
 	// If path has many "../" segments, it was likely an absolute path converted to relative
-	// Convert it back to absolute for cleaner display
-	if strings.Count(path, "../") >= 3 {
-		if absPath, err := filepath.Abs(path); err == nil {
-			return absPath
+	// Convert it to a more readable form
+	if strings.Count(path, "../") >= maxRelativePathDepth {
+		absPath, err := filepath.Abs(path)
+		if err != nil {
+			// If we can't get absolute path, just return as-is
+			return path
 		}
+
+		// Check if the absolute path is under $HOME
+		home, err := os.UserHomeDir()
+		if err == nil && strings.HasPrefix(absPath, home+string(filepath.Separator)) {
+			// Path is under home directory - use $HOME-relative form
+			// Using $HOME instead of ~ for cross-platform compatibility
+			relToHome := strings.TrimPrefix(absPath, home)
+			return "$HOME" + relToHome
+		}
+
+		// Path is not under home - use absolute path
+		return absPath
 	}
 
 	// Ensure relative paths start with "./" for consistency

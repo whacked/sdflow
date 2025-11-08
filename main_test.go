@@ -2456,6 +2456,39 @@ func TestNormalizePathForDisplay(t *testing.T) {
 			}
 		})
 	}
+
+	// Test $HOME rendering separately with actual filesystem paths
+	t.Run("deep path under $HOME converts to $HOME-relative", func(t *testing.T) {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			t.Skip("Cannot get home directory, skipping test")
+		}
+
+		// Create a deep path under home
+		testHomeDir := filepath.Join(home, "test-sdflow-a", "b", "c", "d")
+		os.MkdirAll(testHomeDir, 0755)
+		defer os.RemoveAll(filepath.Join(home, "test-sdflow-a"))
+
+		// Get current working directory to restore later
+		origCwd, err := os.Getwd()
+		if err != nil {
+			t.Fatalf("Failed to get current directory: %v", err)
+		}
+
+		// Change to the deep directory
+		os.Chdir(testHomeDir)
+		defer os.Chdir(origCwd)
+
+		// A file 3+ levels up under home should be shown as $HOME/...
+		input := "../../../file.txt"
+		result := normalizePathForDisplay(input)
+
+		// Should be $HOME/test-sdflow-a/file.txt
+		expected := "$HOME/test-sdflow-a/file.txt"
+		if result != expected {
+			t.Errorf("normalizePathForDisplay(%q) = %q, want %q (deep paths under home should use $HOME)", input, result, expected)
+		}
+	})
 }
 
 func TestCASStdoutCapture(t *testing.T) {
@@ -3447,5 +3480,322 @@ func TestOutputExpansion_AllSyntaxFormats(t *testing.T) {
 				t.Errorf("Expected %q, got %q", tt.expected, result)
 			}
 		})
+	}
+}
+
+func TestExpandTilde(t *testing.T) {
+	// Get the actual home directory for comparison
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("Failed to get home directory: %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "tilde alone",
+			input:    "~",
+			expected: home,
+		},
+		{
+			name:     "tilde with slash",
+			input:    "~/Downloads",
+			expected: filepath.Join(home, "Downloads"),
+		},
+		{
+			name:     "tilde with nested path",
+			input:    "~/Documents/Projects/foo.txt",
+			expected: filepath.Join(home, "Documents/Projects/foo.txt"),
+		},
+		{
+			name:     "empty string",
+			input:    "",
+			expected: "",
+		},
+		{
+			name:     "no tilde - absolute path",
+			input:    "/tmp/foo.txt",
+			expected: "/tmp/foo.txt",
+		},
+		{
+			name:     "no tilde - relative path",
+			input:    "./foo.txt",
+			expected: "./foo.txt",
+		},
+		{
+			name:     "tilde with username (not supported)",
+			input:    "~otheruser/foo.txt",
+			expected: "~otheruser/foo.txt",
+		},
+		{
+			name:     "tilde in middle of path (not expanded)",
+			input:    "/tmp/~foo.txt",
+			expected: "/tmp/~foo.txt",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := expandTilde(tt.input)
+			if result != tt.expected {
+				t.Errorf("expandTilde(%q) = %q, want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestIsPathWithTilde(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected bool
+	}{
+		{
+			name:     "absolute path",
+			input:    "/tmp/foo.txt",
+			expected: true,
+		},
+		{
+			name:     "relative path with ./",
+			input:    "./foo.txt",
+			expected: true,
+		},
+		{
+			name:     "relative path with ../",
+			input:    "../foo.txt",
+			expected: true,
+		},
+		{
+			name:     "tilde path",
+			input:    "~/Downloads/foo.txt",
+			expected: true,
+		},
+		{
+			name:     "tilde alone",
+			input:    "~",
+			expected: true,
+		},
+		{
+			name:     "not a path - simple filename",
+			input:    "foo.txt",
+			expected: false,
+		},
+		{
+			name:     "not a path - variable",
+			input:    "$HOME/foo.txt",
+			expected: false,
+		},
+		{
+			name:     "not a path - URL",
+			input:    "http://example.com/foo.txt",
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isPath(tt.input)
+			if result != tt.expected {
+				t.Errorf("isPath(%q) = %v, want %v", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestGetPathRelativeToCwdWithTilde(t *testing.T) {
+	// Get the actual home directory
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("Failed to get home directory: %v", err)
+	}
+
+	// Create a test file in home directory
+	testFile := filepath.Join(home, "test-sdflow-file.txt")
+	os.WriteFile(testFile, []byte("test"), 0644)
+	defer os.Remove(testFile)
+
+	tests := []struct {
+		name           string
+		input          string
+		expectContains string // Check if result contains this (for flexible matching)
+	}{
+		{
+			name:           "tilde expands and converts to relative",
+			input:          "~/test-sdflow-file.txt",
+			expectContains: "test-sdflow-file.txt",
+		},
+		{
+			name:           "tilde directory path",
+			input:          "~/",
+			expectContains: "..",
+		},
+		{
+			name:           "non-path stays unchanged",
+			input:          "foo.txt",
+			expectContains: "foo.txt",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := getPathRelativeToCwd(tt.input)
+			if !strings.Contains(result, tt.expectContains) {
+				t.Errorf("getPathRelativeToCwd(%q) = %q, expected to contain %q", tt.input, result, tt.expectContains)
+			}
+			// Additional check: if input was a tilde path, result should not contain tilde
+			if strings.HasPrefix(tt.input, "~") && strings.Contains(result, "~") {
+				t.Errorf("getPathRelativeToCwd(%q) = %q, tilde should have been expanded", tt.input, result)
+			}
+		})
+	}
+}
+
+func TestTildePathIntegration(t *testing.T) {
+	// Integration test: Create a file in home, reference it with tilde, ensure it works
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("Cannot get home directory, skipping test")
+	}
+
+	// Create a temporary test file in home directory
+	testFile := filepath.Join(home, "test-sdflow-integration.txt")
+	testContent := "integration test content"
+	err = os.WriteFile(testFile, []byte(testContent), 0644)
+	if err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+	defer os.Remove(testFile)
+
+	// Test that tilde path is recognized as a path
+	tildeInput := "~/test-sdflow-integration.txt"
+	if !isPath(tildeInput) {
+		t.Errorf("isPath(%q) should return true", tildeInput)
+	}
+
+	// Test that expandTilde works
+	expanded := expandTilde(tildeInput)
+	if expanded != testFile {
+		t.Errorf("expandTilde(%q) = %q, want %q", tildeInput, expanded, testFile)
+	}
+
+	// Test that the expanded path exists
+	if _, err := os.Stat(expanded); os.IsNotExist(err) {
+		t.Errorf("Expanded path %q does not exist", expanded)
+	}
+
+	// Test that we can read the file through the expanded path
+	content, err := os.ReadFile(expanded)
+	if err != nil {
+		t.Errorf("Failed to read file at expanded path: %v", err)
+	}
+	if string(content) != testContent {
+		t.Errorf("File content mismatch: got %q, want %q", string(content), testContent)
+	}
+}
+
+func TestTildeExpansionForInputsAndOutputs(t *testing.T) {
+	// Test that tilde expansion works for both in: and out: specifications
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("Cannot get home directory, skipping test")
+	}
+
+	// Create test files
+	testInputFile := filepath.Join(home, "test-sdflow-in.txt")
+	testOutputFile := filepath.Join(home, "test-sdflow-out.txt")
+
+	err = os.WriteFile(testInputFile, []byte("test input"), 0644)
+	if err != nil {
+		t.Fatalf("Failed to create test input file: %v", err)
+	}
+	defer os.Remove(testInputFile)
+	defer os.Remove(testOutputFile)
+
+	// Test processPathString for input path with tilde
+	env := make(map[string]string)
+
+	// Simulate what happens when processing "in: ~/test-sdflow-in.txt"
+	inputPath := "~/test-sdflow-in.txt"
+	processedInput := getPathRelativeToCwd(inputPath)
+
+	// The processed path should not contain tilde
+	if strings.Contains(processedInput, "~") {
+		t.Errorf("Input path %q still contains tilde after processing: %q", inputPath, processedInput)
+	}
+
+	// The processed path should resolve to the test file
+	absProcessedInput, err := filepath.Abs(processedInput)
+	if err != nil {
+		t.Fatalf("Failed to get absolute path: %v", err)
+	}
+	if absProcessedInput != testInputFile {
+		t.Errorf("Processed input path %q does not resolve to expected file %q", absProcessedInput, testInputFile)
+	}
+
+	// Test processFieldForPaths for output path with tilde
+	outputPath := "~/test-sdflow-out.txt"
+	processedOutput := processFieldForPaths(outputPath, env)
+
+	processedOutputStr, ok := processedOutput.(string)
+	if !ok {
+		t.Fatalf("processFieldForPaths returned non-string: %T", processedOutput)
+	}
+
+	// The processed path should not contain tilde
+	if strings.Contains(processedOutputStr, "~") {
+		t.Errorf("Output path %q still contains tilde after processing: %q", outputPath, processedOutputStr)
+	}
+
+	// The processed path should resolve to the test output file location
+	absProcessedOutput, err := filepath.Abs(processedOutputStr)
+	if err != nil {
+		t.Fatalf("Failed to get absolute path: %v", err)
+	}
+	if absProcessedOutput != testOutputFile {
+		t.Errorf("Processed output path %q does not resolve to expected file %q", absProcessedOutput, testOutputFile)
+	}
+
+	// Test with output as array
+	outputArray := []interface{}{"~/test-sdflow-out.txt", "~/test-sdflow-out2.txt"}
+	processedArray := processFieldForPaths(outputArray, env)
+
+	processedArrayTyped, ok := processedArray.([]interface{})
+	if !ok {
+		t.Fatalf("processFieldForPaths returned non-array: %T", processedArray)
+	}
+
+	for i, item := range processedArrayTyped {
+		itemStr, ok := item.(string)
+		if !ok {
+			t.Fatalf("Array item %d is not string: %T", i, item)
+		}
+		if strings.Contains(itemStr, "~") {
+			t.Errorf("Output array item %d %q still contains tilde", i, itemStr)
+		}
+	}
+
+	// Test with output as map
+	outputMap := map[string]interface{}{
+		"first":  "~/test-sdflow-out.txt",
+		"second": "~/test-sdflow-out2.txt",
+	}
+	processedMap := processFieldForPaths(outputMap, env)
+
+	processedMapTyped, ok := processedMap.(map[string]interface{})
+	if !ok {
+		t.Fatalf("processFieldForPaths returned non-map: %T", processedMap)
+	}
+
+	for key, val := range processedMapTyped {
+		valStr, ok := val.(string)
+		if !ok {
+			t.Fatalf("Map value for key %q is not string: %T", key, val)
+		}
+		if strings.Contains(valStr, "~") {
+			t.Errorf("Output map value for key %q still contains tilde: %q", key, valStr)
+		}
 	}
 }

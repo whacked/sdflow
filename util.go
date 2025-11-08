@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -77,8 +78,37 @@ func topSortDependencies(taskDependencies map[string][]string, targetTask string
 	return sorted, err
 }
 
+// expandTilde expands ~ and ~/ prefixes in paths to the user's home directory
+// This is the Go equivalent of Python's os.path.expanduser()
+// Returns the original path if it doesn't start with ~ or if expansion fails
+func expandTilde(path string) string {
+	if path == "" || !strings.HasPrefix(path, "~") {
+		return path
+	}
+
+	// Get the user's home directory
+	home, err := os.UserHomeDir()
+	if err != nil {
+		// If we can't get home dir, return the original path unchanged
+		trace(fmt.Sprintf("Warning: Failed to expand tilde in path '%s': %v", path, err))
+		return path
+	}
+
+	// Handle "~" alone or "~/"
+	if path == "~" {
+		return home
+	}
+	if strings.HasPrefix(path, "~/") {
+		return filepath.Join(home, path[2:])
+	}
+
+	// If it's ~username/path, we don't support that (would require user lookup)
+	// Just return the original path
+	return path
+}
+
 func isPath(s string) bool {
-	return strings.HasPrefix(s, "./") || strings.HasPrefix(s, "../") || strings.HasPrefix(s, "/")
+	return strings.HasPrefix(s, "./") || strings.HasPrefix(s, "../") || strings.HasPrefix(s, "/") || strings.HasPrefix(s, "~")
 }
 
 func isRemotePath(path string) bool {
