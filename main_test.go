@@ -3022,6 +3022,9 @@ func TestCycleWithinLargerGraph(t *testing.T) {
 
 	// Create initial files
 	for _, f := range []string{fileIndep, fileA, fileB} {
+		if f == fileB || f == fileA {
+			continue
+		}
 		if err := os.WriteFile(f, []byte("initial"), 0644); err != nil {
 			t.Fatal(err)
 		}
@@ -3693,6 +3696,84 @@ func TestTildePathIntegration(t *testing.T) {
 	}
 	if string(content) != testContent {
 		t.Errorf("File content mismatch: got %q, want %q", string(content), testContent)
+	}
+}
+
+func TestHasSelfCycle(t *testing.T) {
+	// Test the self-cycle detection with various path formats
+	tests := []struct {
+		name        string
+		inputs      []*RunnableTaskInput
+		outputs     []string
+		expectCycle bool
+	}{
+		{
+			name: "exact match - absolute paths",
+			inputs: []*RunnableTaskInput{
+				{path: "/tmp/foo.txt"},
+			},
+			outputs:     []string{"/tmp/foo.txt"},
+			expectCycle: true,
+		},
+		{
+			name: "exact match - relative paths",
+			inputs: []*RunnableTaskInput{
+				{path: "./foo.txt"},
+			},
+			outputs:     []string{"./foo.txt"},
+			expectCycle: true,
+		},
+		{
+			name: "normalized match - relative vs simple",
+			inputs: []*RunnableTaskInput{
+				{path: "foo.txt"},
+			},
+			outputs:     []string{"./foo.txt"},
+			expectCycle: true,
+		},
+		{
+			name: "no match - different files",
+			inputs: []*RunnableTaskInput{
+				{path: "/tmp/foo.txt"},
+			},
+			outputs:     []string{"/tmp/bar.txt"},
+			expectCycle: false,
+		},
+		{
+			name: "multiple inputs, one matches output",
+			inputs: []*RunnableTaskInput{
+				{path: "/tmp/foo.txt"},
+				{path: "/tmp/bar.txt"},
+			},
+			outputs:     []string{"/tmp/bar.txt"},
+			expectCycle: true,
+		},
+		{
+			name: "multiple outputs, one matches input",
+			inputs: []*RunnableTaskInput{
+				{path: "/tmp/foo.txt"},
+			},
+			outputs:     []string{"/tmp/bar.txt", "/tmp/foo.txt"},
+			expectCycle: true,
+		},
+		{
+			name: "multiple inputs and outputs, no match",
+			inputs: []*RunnableTaskInput{
+				{path: "/tmp/foo.txt"},
+				{path: "/tmp/bar.txt"},
+			},
+			outputs:     []string{"/tmp/baz.txt", "/tmp/qux.txt"},
+			expectCycle: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := hasSelfCycle(tt.inputs, tt.outputs)
+			if result != tt.expectCycle {
+				t.Errorf("hasSelfCycle() = %v, want %v", result, tt.expectCycle)
+			}
+		})
 	}
 }
 

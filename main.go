@@ -921,6 +921,40 @@ func isSimpleDownloadTask(task *RunnableTask) bool {
 	return hasRemoteInput
 }
 
+// hasSelfCycle checks if any input path matches any output path.
+// This indicates a self-modifying file that should always be considered stale.
+// Paths are normalized to absolute paths for comparison to handle variations like:
+// ./foo.txt vs foo.txt vs /absolute/path/foo.txt
+func hasSelfCycle(inputs []*RunnableTaskInput, outputPaths []string) bool {
+	// Convert all output paths to absolute paths
+	absOutputPaths := make(map[string]bool)
+	for _, outPath := range outputPaths {
+		absPath, err := filepath.Abs(outPath)
+		if err != nil {
+			// If we can't get absolute path, use the original path
+			absPath = outPath
+		}
+		absOutputPaths[absPath] = true
+	}
+
+	// Check if any input path matches any output path
+	for _, input := range inputs {
+		absInputPath, err := filepath.Abs(input.path)
+		if err != nil {
+			// If we can't get absolute path, use the original path
+			absInputPath = input.path
+		}
+
+		if absOutputPaths[absInputPath] {
+			// Found a self-cycle: input == output
+			trace(fmt.Sprintf("Self-cycle detected: input %s matches output", absInputPath))
+			return true
+		}
+	}
+
+	return false
+}
+
 func checkIfOutputMoreRecentThanInputs(task *RunnableTask) bool {
 	if task.taskDeclaration == nil {
 		return false
@@ -931,6 +965,13 @@ func checkIfOutputMoreRecentThanInputs(task *RunnableTask) bool {
 		outputPaths := getOutputPaths(task.taskDeclaration.Out)
 		if len(outputPaths) == 0 {
 			return false
+		}
+
+		// SELF-CYCLE DETECTION: If any input path matches any output path,
+		// the task is self-modifying and should always be considered stale.
+		// We need to compare absolute paths to handle ./foo vs foo vs /abs/path/foo
+		if hasSelfCycle(task.inputs, outputPaths) {
+			return false // Self-modifying file is always stale
 		}
 
 		// For multiple outputs: ALL outputs must be newer than ALL inputs
